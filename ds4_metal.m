@@ -47574,11 +47574,12 @@ static int qwen4_dispatch(int kernel, const void *args, size_t args_len,
             }
         } else if (kernel >= QWEN4_K_MOE_MM_MID && kernel <= QWEN4_K_MOE_MM_DOWN_NT8) {
             /* Keep each quantization's dequantizer constant through the K
-             * loop. M3 Ultra has balanced full-model measurements; other
-             * devices can opt in, and zero restores the generic kernel. */
+             * loop. M3 Ultra and M5 have balanced full-model measurements;
+             * other devices can opt in, and zero restores the generic kernel. */
             const int override = ds4_gpu_env_bool("DS4_QWEN4_MOE_MM_SPECIALIZE");
             const bool specialize = override >= 0 ? override != 0 :
-                ds4_gpu_device_name_contains("M3 Ultra");
+                ds4_gpu_device_name_contains("M3 Ultra") ||
+                ds4_gpu_device_is_m5_apple_silicon();
             const uint32_t type = specialize ?
                 ((const qwen4_moe_mm_args *)args)->weight_type : 0u;
             if (type >= 40u) return 0;
@@ -47727,7 +47728,7 @@ int ds4_gpu_qwen4_hc_norm_tensor(
             reuse = true;
         } else if (reuse_env == NULL || strcmp(reuse_env, "0") != 0) {
             reuse = n_tokens >= 8192u && n_embd == 2560u && n_hc == 4u && n_inject == 4u &&
-                    ds4_gpu_device_name_contains("M3 Ultra");
+                    (ds4_gpu_device_name_contains("M3 Ultra") || ds4_gpu_device_is_m5_apple_silicon());
         }
     }
     const int kernel = reuse
@@ -48376,13 +48377,17 @@ int ds4_gpu_qwen4_moe_build_lists_tensor(
                           MTLSizeMake(1, 1, 1), MTLSizeMake(512, 1, 1), 0);
 }
 
-static uint32_t qwen4_moe_mm_tiles(uint32_t n_tokens, const char *env_name) {
+static uint32_t qwen4_moe_mm_tiles(uint32_t n_tokens, bool mid) {
     uint32_t tiles = (n_tokens + 31u) / 32u;
-    /* Spread large routed batches over more independent tiles on M3 Ultra.
+    /* Spread large routed batches over more independent tiles on M3 Ultra
+     * (gate/up and down) and on M5 (gate/up; the down tiles measured flat).
      * Each tile keeps the same K loop and accumulation order. */
-    const uint32_t default_cap = ds4_gpu_device_name_contains("M3 Ultra") ?
+    const bool spread = ds4_gpu_device_name_contains("M3 Ultra") ||
+                        (mid && ds4_gpu_device_is_m5_apple_silicon());
+    const uint32_t default_cap = spread ?
         (n_tokens >= 8192u ? 32u : n_tokens >= 4096u ? 16u : 8u) : 8u;
-    const uint32_t cap = (uint32_t)ds4_gpu_env_u64(env_name, default_cap, 1u, 32u);
+    const uint32_t cap = (uint32_t)ds4_gpu_env_u64(
+        mid ? "DS4_QWEN4_MOE_MID_TILES" : "DS4_QWEN4_MOE_DOWN_TILES", default_cap, 1u, 32u);
     return tiles > cap ? cap : tiles;
 }
 
@@ -48404,9 +48409,12 @@ static uint32_t qwen4_moe_mm_nt(uint32_t n_tokens, uint32_t type, const char *en
 }
 
 static bool qwen4_moe_mm_tails(uint32_t type, uint32_t nt) {
+    /* Remainder tiles measured on M3 Ultra for the low-bit experts and on M5
+     * for Q4_K gate/up with MXFP4 down. */
     const int override = ds4_gpu_env_bool("DS4_QWEN4_MOE_TAILS");
     return nt > 1u && (override >= 0 ? override != 0 :
-        (type == 16u || type == 10u) && ds4_gpu_device_name_contains("M3 Ultra"));
+        ((type == 16u || type == 10u) && ds4_gpu_device_name_contains("M3 Ultra")) ||
+        ((type == 12u || type == 39u) && ds4_gpu_device_is_m5_apple_silicon()));
 }
 
 int ds4_gpu_qwen4_moe_mm_mid_tensor(
@@ -48416,7 +48424,7 @@ int ds4_gpu_qwen4_moe_mm_mid_tensor(
         uint32_t in_dim, uint32_t ff_dim, uint32_t list_cap) {
     const uint32_t row_bytes = qwen4_expert_row_bytes(weight_type, in_dim);
     const uint64_t expert_bytes = (uint64_t)row_bytes * ff_dim;
-    const uint32_t tiles = qwen4_moe_mm_tiles(n_tokens, "DS4_QWEN4_MOE_MID_TILES");
+    const uint32_t tiles = qwen4_moe_mm_tiles(n_tokens, true);
     const uint32_t nt = qwen4_moe_mm_nt(n_tokens, weight_type, "DS4_QWEN4_MOE_MID_NT");
     const int kernel = nt == 1u ? QWEN4_K_MOE_MM_MID_NT1 :
                        nt == 2u ? QWEN4_K_MOE_MM_MID_NT2 : QWEN4_K_MOE_MM_MID;
@@ -48454,7 +48462,7 @@ int ds4_gpu_qwen4_moe_mm_down_tensor(
     const uint32_t weight_dim = weight_type == 10u ? (ff_dim + 255u) / 256u * 256u : ff_dim;
     const uint32_t row_bytes = qwen4_expert_row_bytes(weight_type, weight_dim);
     const uint64_t expert_bytes = (uint64_t)row_bytes * out_dim;
-    const uint32_t tiles = qwen4_moe_mm_tiles(n_tokens, "DS4_QWEN4_MOE_DOWN_TILES");
+    const uint32_t tiles = qwen4_moe_mm_tiles(n_tokens, false);
     const uint32_t nt = qwen4_moe_mm_nt(n_tokens, weight_type, "DS4_QWEN4_MOE_DOWN_NT");
     const int kernel = nt == 1u ? QWEN4_K_MOE_MM_DOWN_NT1 :
                        nt == 2u ? QWEN4_K_MOE_MM_DOWN_NT2 :

@@ -92,6 +92,16 @@ MTP sessions retain the separate operations, as do other devices by default. See
 [ordinary-decode fusion measurements](../speed-bench/qwen38-q2-decode-fusions.md)
 for the measured gain, exact-logit checks, and rejected experiments.
 
+On Apple M5, routed-expert prefill GEMMs specialize the bound quantization
+by default, single-token Q4_K gate/up decode uses one row per SIMD group with
+four groups per threadgroup, and MXFP4 routed-down decode rows specialize the
+quantization with sixteen SIMD groups per threadgroup. The same overrides
+apply (`DS4_QWEN4_MOE_MM_SPECIALIZE`, `DS4_QWEN4_Q4K_MID_NR`/`_NSG`,
+`DS4_QWEN4_MOE_MV_SPECIALIZE`/`_NSG`); the M3 Ultra ordinary-decode fusions
+stay off on M5, where they measured slower. See
+[the M5 Max round-one report](../speed-bench/qwen38-m5-round1.md) for the
+single-engine A/B measurements, exact-logit checks and the sweep through 128K.
+
 The older recipes below keep PLE inside the main GGUF, so their file sizes
 are not directly comparable with the external-PLE builds.
 
