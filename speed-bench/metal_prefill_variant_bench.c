@@ -26,6 +26,10 @@ typedef struct {
     const char *candidate_env;
     const char *candidate_value;
     const char *control_value;
+    const char *extra_env[16];    /* candidate-only NAME=VALUE settings */
+    const char *control_env[16];  /* control-only NAME=VALUE settings */
+    int n_extra;
+    int n_control;
     int prefill_chunk;
     int prefix_tokens;
     int initial_tokens;
@@ -50,6 +54,8 @@ static void usage(FILE *fp, const char *argv0) {
             "  --candidate-env NAME   unset NAME for control, set it for candidate\n"
             "  --candidate-value TEXT candidate env value (default: 1)\n"
             "  --control-value TEXT   explicit control env value (default: unset)\n"
+            "  --extra-env NAME=VALUE additional candidate-only setting; repeatable\n"
+            "  --control-env NAME=VALUE control-only setting; repeatable\n"
             "  --prefill-chunk N      tokens per chunk (default: 4096)\n"
             "  --prefix-tokens N      final prefill length (default: 8192)\n"
             "  --initial-tokens N     untimed live prefix before appending to that length\n"
@@ -115,6 +121,15 @@ static bench_config parse_options(int argc, char **argv) {
             cfg.prefill_chunk = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
         } else if (!strcmp(arg, "--candidate-env")) {
             cfg.candidate_env = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--extra-env") || !strcmp(arg, "--control-env")) {
+            const char *spec = need_arg(&i, argc, argv, arg);
+            const char **list = arg[2] == 'e' ? cfg.extra_env : cfg.control_env;
+            int *n = arg[2] == 'e' ? &cfg.n_extra : &cfg.n_control;
+            if (!strchr(spec, '=') || spec[0] == '=' || *n >= 16) {
+                fprintf(stderr, "%s: %s needs NAME=VALUE (at most 16)\n", BENCH_NAME, arg);
+                exit(2);
+            }
+            list[(*n)++] = spec;
         } else if (!strcmp(arg, "--prefix-tokens")) {
             cfg.prefix_tokens =
                 parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
@@ -208,9 +223,26 @@ static char *read_text(const char *path) {
     return text;
 }
 
+static int apply_env_list(const char *const *list, int n, bool set) {
+    for (int i = 0; i < n; i++) {
+        const char *eq = strchr(list[i], '=');
+        char name[128];
+        const size_t len = (size_t)(eq - list[i]);
+        if (len >= sizeof(name)) return 1;
+        memcpy(name, list[i], len);
+        name[len] = '\0';
+        if ((set ? setenv(name, eq + 1, 1) : unsetenv(name)) != 0) return 1;
+    }
+    return 0;
+}
+
 static int select_variant(const bench_config *cfg, int variant) {
-    const int env_rc =
-        variant == 0
+    /* Control: candidate settings unset (or set to --control-value),
+     * control-only settings applied.  Candidate: control-only settings
+     * unset, candidate settings applied. */
+    int env_rc = apply_env_list(cfg->control_env, cfg->n_control, variant == 0);
+    env_rc |= apply_env_list(cfg->extra_env, cfg->n_extra, variant != 0);
+    env_rc |= variant == 0
             ? (cfg->control_value ? setenv(cfg->candidate_env, cfg->control_value, 1) : unsetenv(cfg->candidate_env))
             : setenv(cfg->candidate_env, cfg->candidate_value, 1);
     if (env_rc != 0) {

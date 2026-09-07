@@ -47879,10 +47879,12 @@ int ds4_gpu_qwen4_gdn_scan_tensor(
          * preserves the recurrent arithmetic. M3 Ultra prefers eight groups
          * for verification and four at the measured large-prefill shape. */
         const uint32_t default_nsg = n_tokens == 2u && ds4_gpu_device_name_contains("M3 Ultra") ? 8u : 1u;
-        const uint32_t nsg = n_tokens <= 2u ?
-            (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_GDN_NSG", default_nsg, 1u, 8u) :
+        const uint32_t prefill_default_nsg =
             n_tokens >= 8192u && n_k_head == 16u && n_v_head == 48u &&
             ds4_gpu_device_name_contains("M3 Ultra") ? 4u : 1u;
+        const uint32_t nsg = n_tokens <= 2u ?
+            (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_GDN_NSG", default_nsg, 1u, 8u) :
+            (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_GDN_PREFILL_NSG", prefill_default_nsg, 1u, 8u);
         return qwen4_dispatch(QWEN4_K_GDN_SCAN_R4, &args, sizeof(args), bd, 6,
                               MTLSizeMake((head_dim + 4u * nsg - 1u) / (4u * nsg), n_v_head, 1),
                               MTLSizeMake(32u * nsg, 1, 1), 0);
