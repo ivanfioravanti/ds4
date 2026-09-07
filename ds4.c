@@ -54850,7 +54850,7 @@ typedef struct {
     ds4_gpu_tensor *layer_block_key[DS4_MAX_LAYER];
     /* MTP: staged predictor input, its residual, and the recurrent-state
      * snapshot that verify rollback restores */
-    ds4_gpu_tensor *mtp_e, *mtp_cat, *mtp_proj, *mtp_R;
+    ds4_gpu_tensor *mtp_e, *mtp_cat, *mtp_proj, *mtp_R, *mtp_argmax, *mtp_argmax_tmp;
     ds4_gpu_tensor *snap_lin_state[DS4_MAX_LAYER];
     ds4_gpu_tensor *snap_lin_hist[DS4_MAX_LAYER];
     ds4_gpu_tensor *snap_ple_hist;
@@ -54978,7 +54978,7 @@ static void qwen4_graph_free(ds4_qwen4_gpu_graph *g) {
         &g->score, &g->sel_blocks, &g->sel_tokens, &g->n_sel, &g->attn_part,
         &g->router, &g->selected, &g->weights, &g->mid, &g->part, &g->sh_gate_logit, &g->logits,
         &g->moe_lists, &g->moe_counts, &g->sh_gate, &g->sh_up, &g->sh_mid, &g->sh_out, &g->hc_u, &g->hc_lo_act,
-        &g->mtp_e, &g->mtp_cat, &g->mtp_proj, &g->mtp_R, &g->snap_ple_hist, &g->pos3,
+        &g->mtp_e, &g->mtp_cat, &g->mtp_proj, &g->mtp_R, &g->mtp_argmax, &g->mtp_argmax_tmp, &g->snap_ple_hist, &g->pos3,
     };
     free(g->host_pos3);
     g->host_pos3 = NULL;
@@ -55084,6 +55084,8 @@ static bool qwen4_graph_alloc(ds4_qwen4_gpu_graph *g, const ds4_weights *w, uint
         QWEN4_ALLOC(mtp_cat, 2u * (hc + 1u) * 2u * E);
         QWEN4_ALLOC(mtp_proj, 2u * (hc + 1u) * E);
         QWEN4_ALLOC(mtp_R, 2u * hc_dim);
+        QWEN4_ALLOC(mtp_argmax, 1u);
+        QWEN4_ALLOC(mtp_argmax_tmp, ((DS4_N_VOCAB + 4095u) / 4096u) * 2u);
         QWEN4_ALLOC(snap_ple_hist, (uint64_t)(DS4_N_PLE_CONV - 1u) * DS4_N_PLE_NGRAM * hc_dim);
     }
 #undef QWEN4_ALLOC
@@ -55675,9 +55677,19 @@ static bool qwen4_graph_mtp_steps(ds4_qwen4_gpu_graph *g, const ds4_model *m, co
              qwen4_gemv(g->logits, m, w->output, g->mixed, 1);
     }
     g->R = R_save;
+    const char *argmax_env = getenv("DS4_QWEN4_MTP_GPU_ARGMAX");
+    const bool gpu_argmax = want_logits && draft_out && !logits_out &&
+        (!argmax_env || strcmp(argmax_env, "0") != 0);
+    if (ok && gpu_argmax) ok = ds4_gpu_qwen4_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,
+                                                          g->logits, DS4_N_VOCAB) != 0;
     if (!ds4_gpu_end_commands()) ok = false;
     ds4_gpu_tensor_free(last);
-    if (ok && want_logits) {
+    if (ok && gpu_argmax) {
+        int32_t token = -1;
+        ok = ds4_gpu_tensor_read(g->mtp_argmax, 0, &token, sizeof(token)) != 0;
+        if (ok && (token < 0 || token >= (int32_t)DS4_N_VOCAB)) ok = false;
+        if (ok) *draft_out = token;
+    } else if (ok && want_logits) {
         float *dst = logits_out ? logits_out : g->host_logits;
         ok = ds4_gpu_tensor_read(g->logits, 0, dst, (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
         if (ok && draft_out) *draft_out = sample_argmax(dst, DS4_N_VOCAB);

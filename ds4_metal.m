@@ -47318,6 +47318,7 @@ enum {
     QWEN4_K_MOE_MID_Q4K_NR1,
     QWEN4_K_MOE_DOWN,
     QWEN4_K_MOE_REDUCE,
+    QWEN4_K_ARGMAX,
     QWEN4_K_MTP_STAGE,
     QWEN4_K_MTP_COMBINE,
     QWEN4_K_GDN_FRONT,
@@ -47381,6 +47382,7 @@ static const char *const qwen4_kernel_names[QWEN4_K_COUNT] = {
     "kernel_qwen4_moe_mid_q4k_nr1",
     "kernel_qwen4_moe_down",
     "kernel_qwen4_moe_reduce",
+    "kernel_qwen4_argmax",
     "kernel_qwen4_mtp_stage",
     "kernel_qwen4_mtp_combine",
     "kernel_qwen4_gdn_front",
@@ -48288,6 +48290,23 @@ int ds4_gpu_qwen4_moe_mm_down_tensor(
         if (nt > 2u && !qwen4_dispatch(QWEN4_K_MOE_MM_DOWN_NT2, &args, sizeof(args), b, 5, tail_grid, MTLSizeMake(128, 1, 1), 0)) return 0;
     }
     return 1;
+}
+
+int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,
+                               const ds4_gpu_tensor *logits, uint32_t n_vocab) {
+    if (!n_vocab || n_vocab > INT32_MAX) return 0;
+    const uint32_t chunks = (n_vocab + 4095u) / 4096u;
+    struct { uint32_t n, finish; } args = {n_vocab, 0};
+    qwen4_bind b[3];
+    if (!qwen4_bind_tensor(&b[0], logits, (uint64_t)n_vocab * sizeof(float), "argmax logits") ||
+        !qwen4_bind_tensor(&b[1], scratch, (uint64_t)chunks * 8u, "argmax partials") ||
+        !qwen4_bind_tensor(&b[2], out_idx, sizeof(int32_t), "argmax index")) return 0;
+    if (!qwen4_dispatch(QWEN4_K_ARGMAX, &args, sizeof(args), b, 3,
+                       MTLSizeMake(chunks, 1, 1), MTLSizeMake(256, 1, 1), 0)) return 0;
+    args.n = chunks;
+    args.finish = 1;
+    return qwen4_dispatch(QWEN4_K_ARGMAX, &args, sizeof(args), b, 3,
+                          MTLSizeMake(1, 1, 1), MTLSizeMake(256, 1, 1), 0);
 }
 
 int ds4_gpu_qwen4_mtp_stage_tensor(

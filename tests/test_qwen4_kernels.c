@@ -1421,6 +1421,59 @@ static void check_exact_f32(const char *what, const float *got, const float *ref
     }
 }
 
+/* Match host greedy selection at SIMD/chunk boundaries and on exceptional values. */
+static void test_qwen4_argmax(void) {
+    const uint32_t sizes[] = {1u, 31u, 32u, 33u, 255u, 256u, 257u, 4095u, 4096u, 4097u, 248320u};
+    for (uint32_t shape = 0; shape < sizeof(sizes) / sizeof(sizes[0]); shape++) {
+        const uint32_t n = sizes[shape], chunks = (n + 4095u) / 4096u, guard = 7u;
+        float *v = rand_vec(n, 10.0f);
+        ds4_gpu_tensor *x = upload(NULL, n), *tmp = upload(NULL, chunks * 2u + guard);
+        ds4_gpu_tensor *out = upload(NULL, 1u + guard);
+        for (uint32_t mode = 0; mode < 8u; mode++) {
+            if (mode == 1u) { for (uint32_t j = 0; j < n; j++) v[j] = -3.0f; v[n / 2u] = v[n - 1u] = 11.0f; }
+            if (mode == 2u) {
+                const uint32_t neg_inf = 0xff800000u, nan = 0x7fc00000u;
+                for (uint32_t j = 0; j < n; j++) memcpy(v + j, &neg_inf, sizeof(neg_inf));
+                memcpy(v + n / 2u, &nan, sizeof(nan));
+            }
+            if (mode == 3u) { for (uint32_t j = 0; j < n; j++) v[j] = -2.0e30f; }
+            if (mode == 4u) { for (uint32_t j = 0; j < n; j++) v[j] = j & 1u ? -0.0f : 0.0f; }
+            if (mode == 5u) {
+                const uint32_t inf = 0x7f800000u;
+                memcpy(v + n / 2u, &inf, sizeof(inf)); memcpy(v + n - 1u, &inf, sizeof(inf));
+            }
+            if (mode == 6u) { for (uint32_t j = 0; j < n; j++) v[j] = -1.0e30f; }
+            if (mode == 7u) {
+                const uint32_t nan = 0x7fc00000u;
+                for (uint32_t j = 0; j < n; j++) memcpy(v + j, &nan, sizeof(nan));
+            }
+            uint32_t expected = 0;
+            float best = -1.0e30f;
+            for (uint32_t j = 0; j < n; j++) {
+                uint32_t bits; memcpy(&bits, v + j, sizeof(bits));
+                if ((bits & 0x7fffffffu) > 0x7f800000u) continue;
+                if (v[j] > best) { best = v[j]; expected = j; }
+            }
+            require_ok(ds4_gpu_tensor_write(x, 0, v, n * sizeof(float)) &&
+                ds4_gpu_tensor_fill_f32(tmp, 17.25f, chunks * 2u + guard) &&
+                ds4_gpu_tensor_fill_f32(out, 17.25f, 1u + guard) &&
+                ds4_gpu_begin_commands() && ds4_gpu_qwen4_argmax_tensor(out, tmp, x, n) &&
+                ds4_gpu_end_commands(), "Qwen argmax dispatch");
+            uint32_t got;
+            require_ok(ds4_gpu_tensor_read(out, 0, &got, sizeof(got)) && got == expected, "Qwen argmax index");
+            float tail[7];
+            require_ok(ds4_gpu_tensor_read(out, sizeof(uint32_t), tail, sizeof(tail)), "argmax output guard read");
+            for (uint32_t j = 0; j < guard; j++) require_ok(tail[j] == 17.25f, "argmax output guard");
+            require_ok(ds4_gpu_tensor_read(tmp, chunks * 8u, tail, sizeof(tail)), "argmax scratch guard read");
+            for (uint32_t j = 0; j < guard; j++) require_ok(tail[j] == 17.25f, "argmax scratch guard");
+        }
+        require_ok(!ds4_gpu_qwen4_argmax_tensor(out, tmp, x, 0u) &&
+                   !ds4_gpu_qwen4_argmax_tensor(out, tmp, x, n + 1u), "argmax rejects invalid sizes");
+        ds4_gpu_tensor_free(out); ds4_gpu_tensor_free(tmp); ds4_gpu_tensor_free(x); free(v);
+    }
+    printf("Qwen predictor argmax: CPU indices, ties, special values and guards passed\n");
+}
+
 /* The paired mixer must preserve both token rows and its partial-group guard. */
 static void test_hc_pair_groups(arena_t *a) {
     const uint32_t types[] = {1u, 0u, 8u}, widths[] = {9u, 64u, 2560u};
@@ -2361,6 +2414,7 @@ int main(void) {
         return 0;
     }
     printf("hyper-connections\n");
+    test_qwen4_argmax();
     test_hc_pair_groups(&arena);
     test_hc(&arena, 2560, 320, 3, 1u);
     test_hc(&arena, 2560, 320, 2, 1u);

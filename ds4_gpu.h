@@ -3291,6 +3291,10 @@ void ds4_gpu_decode_graphs_invalidate(void);
  * holds per-chunk partial inject dots (consumers apply 2*sigmoid(sum/hc)); the
  * low-rank projection is a plain GEMV of xn and gate_mix applies silu(lo/hc). */
 #define DS4_QWEN4_HC_CHUNKS 8
+/* CPU-compatible argmax: lowest index wins ties; scores <= -1e30 and
+ * NaNs cannot replace initial index zero. Scratch needs ceil(V/4096)*8 bytes. */
+int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,
+                               const ds4_gpu_tensor *logits, uint32_t n_vocab);
 int ds4_gpu_qwen4_hc_norm_tensor(
         ds4_gpu_tensor *xn, ds4_gpu_tensor *inj_part, const ds4_gpu_tensor *R,
         const void *model_map, uint64_t model_size, uint64_t gamma_offset, uint64_t inject_offset,

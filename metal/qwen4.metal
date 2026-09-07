@@ -2717,3 +2717,44 @@ kernel void kernel_qwen4_gdn_front(
         threadgroup_barrier(mem_flags::mem_device);
     }
 }
+
+/* The predictor needs a token ID, not a CPU copy of the entire vocabulary.
+ * First reduce independent 4096-value chunks; then merge their winners.
+ * The -1e30 initial score and index-zero fallback match sample_argmax. */
+struct qwen4_argmax_args { uint n, finish; };
+kernel void kernel_qwen4_argmax(
+        constant qwen4_argmax_args &args,
+        device const float *logits,
+        device uint2 *partials,
+        device int *out_idx,
+        uint group [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort lane [[thread_index_in_simdgroup]],
+        ushort sg [[simdgroup_index_in_threadgroup]]) {
+    const uint begin = args.finish ? 0u : group * 4096u;
+    const uint end = args.finish ? args.n : min(begin + 4096u, args.n);
+    float best = -1.0e30f;
+    uint index = 0;
+    for (uint i = begin + tid; i < end; i += 256u) {
+        const uint2 p = args.finish ? partials[i] : uint2(as_type<uint>(logits[i]), i);
+        if ((p.x & 0x7fffffffu) > 0x7f800000u) continue;
+        const float v = as_type<float>(p.x);
+        if (v > best || (v == best && p.y < index)) { best = v; index = p.y; }
+    }
+    float top = simd_max(best);
+    uint winner = simd_min(best == top ? index : 0xffffffffu);
+    threadgroup float scores[8];
+    threadgroup uint indices[8];
+    if (!lane) { scores[sg] = top; indices[sg] = winner; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (!sg) {
+        best = lane < 8u ? scores[lane] : -1.0e30f;
+        index = lane < 8u ? indices[lane] : 0u;
+        top = simd_max(best);
+        winner = simd_min(best == top ? index : 0xffffffffu);
+        if (!lane) {
+            if (args.finish) out_idx[0] = (int)winner;
+            else partials[group] = uint2(as_type<uint>(top), winner);
+        }
+    }
+}
