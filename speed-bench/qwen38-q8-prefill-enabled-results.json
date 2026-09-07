@@ -1,0 +1,213 @@
+{
+  "date": "2026-09-07",
+  "default": "Qwen on M3 Ultra; DS4_QWEN4_Q8_PREFILL_UNPACK=0 restores original",
+  "experiment": "Omit three mem_none SIMD barriers in scratch F16 GEMM; rejected and removed",
+  "runs": [
+    {
+      "name": "enabled-default-8192",
+      "command": [
+        "rtk",
+        "proxy",
+        "./speed-bench/metal_prefill_variant_bench",
+        "-m",
+        "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        "--ple",
+        "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf",
+        "--prompt-file",
+        "speed-bench/promessi_sposi.txt",
+        "--prefill-chunk",
+        "8192",
+        "--prefix-tokens",
+        "8192",
+        "--warmup-tokens",
+        "8192",
+        "--candidate-env",
+        "DS4_QWEN4_Q8_PREFILL_UNPACK",
+        "--candidate-value",
+        "0",
+        "--repeats",
+        "2"
+      ],
+      "seconds": 78.38361597061157,
+      "returncode": 0,
+      "log": "OUT/q8-prefill/enabled-default-8192.log",
+      "aggregates": {
+        "control": 1218.7224,
+        "candidate": 1235.8188
+      },
+      "candidate_delta_percent": 1.4028,
+      "exact_runs": 8,
+      "exact_floats": 1986560,
+      "raw_log": "ds4: warming mapped tensor pages: 41.72 GiB\nds4: warmed tensor pages in 0.923s (checksum=317283471)\nds4: PLE sidecar table: /Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf (ple.weight [160, 320001536], CPU-only)\nds4: Metal device Apple M3 Ultra, 512.00 GiB RAM\nds4: Metal 4 tensor API disabled for pre-M5/pre-A19 devices\nds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=off\nds4: Metal model views created in 0.756 ms, residency requested in 356.601 ms, warmup 7.596 ms (mapped 42720.42 MiB from offset 10.51 MiB)\nds4: Metal mapped mmaped model as 1 overlapping shared buffers\nds4: metal backend initialized for graph diagnostics\nds4: memory: KV 0.26 GiB (raw 0.20 + compressed 0.06) + buffers 7.04 GiB + resident model 41.72 GiB = 49.02 GiB planned\nds4: memory detail: ctx=8193 prefill_cap=8192 raw_kv_rows=8193 compressed_kv_rows=2049 backend=metal\nmetal-prefill-variant-bench: model=/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf prompt=speed-bench/promessi_sposi.txt prefix=8192 initial=0 warmup=8192 ctx=8193 repeats=2 candidate_env=DS4_QWEN4_Q8_PREFILL_UNPACK candidate_value=0 prefill_chunk=8192\nrun=1 repeat=1 pattern=ABBA slot=1 variant=control tokens=8192 seconds=7.866863 tokens_per_second=1041.3299 exact=yes\nrun=2 repeat=1 pattern=ABBA slot=2 variant=candidate tokens=8192 seconds=6.853018 tokens_per_second=1195.3857 exact=yes\nrun=3 repeat=1 pattern=ABBA slot=3 variant=candidate tokens=8192 seconds=6.848446 tokens_per_second=1196.1838 exact=yes\nrun=4 repeat=1 pattern=ABBA slot=4 variant=control tokens=8192 seconds=6.420977 tokens_per_second=1275.8183 exact=yes\nrun=5 repeat=2 pattern=BAAB slot=1 variant=candidate tokens=8192 seconds=6.407400 tokens_per_second=1278.5217 exact=yes\nrun=6 repeat=2 pattern=BAAB slot=2 variant=control tokens=8192 seconds=6.297362 tokens_per_second=1300.8622 exact=yes\nrun=7 repeat=2 pattern=BAAB slot=3 variant=control tokens=8192 seconds=6.301972 tokens_per_second=1299.9106 exact=yes\nrun=8 repeat=2 pattern=BAAB slot=4 variant=candidate tokens=8192 seconds=6.406350 tokens_per_second=1278.7313 exact=yes\naggregate variant=control runs=4 tokens=32768 seconds=26.887174 tokens_per_second=1218.7224\naggregate variant=candidate runs=4 tokens=32768 seconds=26.515214 tokens_per_second=1235.8188\ncandidate_delta_percent=1.4028 exact_runs=8 exact_floats=1986560 vocab=248320\n"
+    },
+    {
+      "name": "no-barriers-1024",
+      "command": [
+        "rtk",
+        "proxy",
+        "./speed-bench/metal_prefill_variant_bench",
+        "-m",
+        "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        "--ple",
+        "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf",
+        "--prompt-file",
+        "speed-bench/promessi_sposi.txt",
+        "--prefill-chunk",
+        "1024",
+        "--prefix-tokens",
+        "1024",
+        "--warmup-tokens",
+        "1024",
+        "--candidate-env",
+        "DS4_QWEN4_Q8_PREFILL_NO_SIMD_BARRIERS",
+        "--candidate-value",
+        "1",
+        "--repeats",
+        "2"
+      ],
+      "seconds": 11.719897985458374,
+      "returncode": 0,
+      "log": "OUT/q8-prefill/no-barriers-1024.log",
+      "aggregates": {
+        "control": 1172.1317,
+        "candidate": 1168.1283
+      },
+      "candidate_delta_percent": -0.3415,
+      "exact_runs": 8,
+      "exact_floats": 1986560,
+      "raw_log": "ds4: warming mapped tensor pages: 41.72 GiB\nds4: warmed tensor pages in 0.882s (checksum=317283471)\nds4: PLE sidecar table: /Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf (ple.weight [160, 320001536], CPU-only)\nds4: Metal device Apple M3 Ultra, 512.00 GiB RAM\nds4: Metal 4 tensor API disabled for pre-M5/pre-A19 devices\nds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=off\nds4: Metal model views created in 0.826 ms, residency requested in 360.019 ms, warmup 7.502 ms (mapped 42720.42 MiB from offset 10.51 MiB)\nds4: Metal mapped mmaped model as 1 overlapping shared buffers\nds4: metal backend initialized for graph diagnostics\nds4: memory: KV 0.03 GiB (raw 0.03 + compressed 0.01) + buffers 0.87 GiB + resident model 41.72 GiB = 42.62 GiB planned\nds4: memory detail: ctx=1025 prefill_cap=1024 raw_kv_rows=1025 compressed_kv_rows=257 backend=metal\nmetal-prefill-variant-bench: model=/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf prompt=speed-bench/promessi_sposi.txt prefix=1024 initial=0 warmup=1024 ctx=1025 repeats=2 candidate_env=DS4_QWEN4_Q8_PREFILL_NO_SIMD_BARRIERS candidate_value=1 prefill_chunk=1024\nrun=1 repeat=1 pattern=ABBA slot=1 variant=control tokens=1024 seconds=0.873684 tokens_per_second=1172.0485 exact=yes\nrun=2 repeat=1 pattern=ABBA slot=2 variant=candidate tokens=1024 seconds=0.876474 tokens_per_second=1168.3176 exact=yes\nrun=3 repeat=1 pattern=ABBA slot=3 variant=candidate tokens=1024 seconds=0.876461 tokens_per_second=1168.3349 exact=yes\nrun=4 repeat=1 pattern=ABBA slot=4 variant=control tokens=1024 seconds=0.872914 tokens_per_second=1173.0823 exact=yes\nrun=5 repeat=2 pattern=BAAB slot=1 variant=candidate tokens=1024 seconds=0.877141 tokens_per_second=1167.4292 exact=yes\nrun=6 repeat=2 pattern=BAAB slot=2 variant=control tokens=1024 seconds=0.873423 tokens_per_second=1172.3987 exact=yes\nrun=7 repeat=2 pattern=BAAB slot=3 variant=control tokens=1024 seconds=0.874467 tokens_per_second=1170.9990 exact=yes\nrun=8 repeat=2 pattern=BAAB slot=4 variant=candidate tokens=1024 seconds=0.876388 tokens_per_second=1168.4322 exact=yes\naggregate variant=control runs=4 tokens=4096 seconds=3.494488 tokens_per_second=1172.1317\naggregate variant=candidate runs=4 tokens=4096 seconds=3.506464 tokens_per_second=1168.1283\ncandidate_delta_percent=-0.3415 exact_runs=8 exact_floats=1986560 vocab=248320\n"
+    },
+    {
+      "name": "no-barriers-8192",
+      "command": [
+        "rtk",
+        "proxy",
+        "./speed-bench/metal_prefill_variant_bench",
+        "-m",
+        "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        "--ple",
+        "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf",
+        "--prompt-file",
+        "speed-bench/promessi_sposi.txt",
+        "--prefill-chunk",
+        "8192",
+        "--prefix-tokens",
+        "8192",
+        "--warmup-tokens",
+        "8192",
+        "--candidate-env",
+        "DS4_QWEN4_Q8_PREFILL_NO_SIMD_BARRIERS",
+        "--candidate-value",
+        "1",
+        "--repeats",
+        "2"
+      ],
+      "seconds": 75.39395594596863,
+      "returncode": 0,
+      "log": "OUT/q8-prefill/no-barriers-8192.log",
+      "aggregates": {
+        "control": 1195.7171,
+        "candidate": 1130.1039
+      },
+      "candidate_delta_percent": -5.4874,
+      "exact_runs": 8,
+      "exact_floats": 1986560,
+      "raw_log": "ds4: warming mapped tensor pages: 41.72 GiB\nds4: warmed tensor pages in 0.897s (checksum=317283471)\nds4: PLE sidecar table: /Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf (ple.weight [160, 320001536], CPU-only)\nds4: Metal device Apple M3 Ultra, 512.00 GiB RAM\nds4: Metal 4 tensor API disabled for pre-M5/pre-A19 devices\nds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=off\nds4: Metal model views created in 0.933 ms, residency requested in 359.631 ms, warmup 7.588 ms (mapped 42720.42 MiB from offset 10.51 MiB)\nds4: Metal mapped mmaped model as 1 overlapping shared buffers\nds4: metal backend initialized for graph diagnostics\nds4: memory: KV 0.26 GiB (raw 0.20 + compressed 0.06) + buffers 7.04 GiB + resident model 41.72 GiB = 49.02 GiB planned\nds4: memory detail: ctx=8193 prefill_cap=8192 raw_kv_rows=8193 compressed_kv_rows=2049 backend=metal\nmetal-prefill-variant-bench: model=/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf prompt=speed-bench/promessi_sposi.txt prefix=8192 initial=0 warmup=8192 ctx=8193 repeats=2 candidate_env=DS4_QWEN4_Q8_PREFILL_NO_SIMD_BARRIERS candidate_value=1 prefill_chunk=8192\nrun=1 repeat=1 pattern=ABBA slot=1 variant=control tokens=8192 seconds=7.731827 tokens_per_second=1059.5167 exact=yes\nrun=2 repeat=1 pattern=ABBA slot=2 variant=candidate tokens=8192 seconds=8.964907 tokens_per_second=913.7853 exact=yes\nrun=3 repeat=1 pattern=ABBA slot=3 variant=candidate tokens=8192 seconds=6.732760 tokens_per_second=1216.7373 exact=yes\nrun=4 repeat=1 pattern=ABBA slot=4 variant=control tokens=8192 seconds=6.851784 tokens_per_second=1195.6010 exact=yes\nrun=5 repeat=2 pattern=BAAB slot=1 variant=candidate tokens=8192 seconds=6.807054 tokens_per_second=1203.4575 exact=yes\nrun=6 repeat=2 pattern=BAAB slot=2 variant=control tokens=8192 seconds=6.393559 tokens_per_second=1281.2895 exact=yes\nrun=7 repeat=2 pattern=BAAB slot=3 variant=control tokens=8192 seconds=6.427305 tokens_per_second=1274.5622 exact=yes\nrun=8 repeat=2 pattern=BAAB slot=4 variant=candidate tokens=8192 seconds=6.490843 tokens_per_second=1262.0857 exact=yes\naggregate variant=control runs=4 tokens=32768 seconds=27.404475 tokens_per_second=1195.7171\naggregate variant=candidate runs=4 tokens=32768 seconds=28.995564 tokens_per_second=1130.1039\ncandidate_delta_percent=-5.4874 exact_runs=8 exact_floats=1986560 vocab=248320\n"
+    },
+    {
+      "name": "enabled-default-8192-repeat",
+      "command": [
+        "rtk",
+        "proxy",
+        "./speed-bench/metal_prefill_variant_bench",
+        "-m",
+        "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        "--ple",
+        "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf",
+        "--prompt-file",
+        "speed-bench/promessi_sposi.txt",
+        "--prefill-chunk",
+        "8192",
+        "--prefix-tokens",
+        "8192",
+        "--warmup-tokens",
+        "8192",
+        "--candidate-env",
+        "DS4_QWEN4_Q8_PREFILL_UNPACK",
+        "--candidate-value",
+        "0",
+        "--repeats",
+        "4"
+      ],
+      "seconds": 124.80812287330627,
+      "returncode": 0,
+      "log": "OUT/q8-prefill/enabled-default-8192-repeat.log",
+      "aggregates": {
+        "control": 1286.5467,
+        "candidate": 1268.6863
+      },
+      "candidate_delta_percent": -1.3882,
+      "exact_runs": 16,
+      "exact_floats": 3973120,
+      "raw_log": "ds4: warming mapped tensor pages: 41.72 GiB\nds4: warmed tensor pages in 0.892s (checksum=317283471)\nds4: PLE sidecar table: /Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf (ple.weight [160, 320001536], CPU-only)\nds4: Metal device Apple M3 Ultra, 512.00 GiB RAM\nds4: Metal 4 tensor API disabled for pre-M5/pre-A19 devices\nds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=off\nds4: Metal model views created in 0.808 ms, residency requested in 359.259 ms, warmup 7.516 ms (mapped 42720.42 MiB from offset 10.51 MiB)\nds4: Metal mapped mmaped model as 1 overlapping shared buffers\nds4: metal backend initialized for graph diagnostics\nds4: memory: KV 0.26 GiB (raw 0.20 + compressed 0.06) + buffers 7.04 GiB + resident model 41.72 GiB = 49.02 GiB planned\nds4: memory detail: ctx=8193 prefill_cap=8192 raw_kv_rows=8193 compressed_kv_rows=2049 backend=metal\nmetal-prefill-variant-bench: model=/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf prompt=speed-bench/promessi_sposi.txt prefix=8192 initial=0 warmup=8192 ctx=8193 repeats=4 candidate_env=DS4_QWEN4_Q8_PREFILL_UNPACK candidate_value=0 prefill_chunk=8192\nrun=1 repeat=1 pattern=ABBA slot=1 variant=control tokens=8192 seconds=6.411175 tokens_per_second=1277.7689 exact=yes\nrun=2 repeat=1 pattern=ABBA slot=2 variant=candidate tokens=8192 seconds=6.496373 tokens_per_second=1261.0113 exact=yes\nrun=3 repeat=1 pattern=ABBA slot=3 variant=candidate tokens=8192 seconds=6.469738 tokens_per_second=1266.2027 exact=yes\nrun=4 repeat=1 pattern=ABBA slot=4 variant=control tokens=8192 seconds=6.378873 tokens_per_second=1284.2394 exact=yes\nrun=5 repeat=2 pattern=BAAB slot=1 variant=candidate tokens=8192 seconds=6.465803 tokens_per_second=1266.9733 exact=yes\nrun=6 repeat=2 pattern=BAAB slot=2 variant=control tokens=8192 seconds=6.378836 tokens_per_second=1284.2468 exact=yes\nrun=7 repeat=2 pattern=BAAB slot=3 variant=control tokens=8192 seconds=6.373741 tokens_per_second=1285.2734 exact=yes\nrun=8 repeat=2 pattern=BAAB slot=4 variant=candidate tokens=8192 seconds=6.459891 tokens_per_second=1268.1329 exact=yes\nrun=9 repeat=3 pattern=ABBA slot=1 variant=control tokens=8192 seconds=6.350894 tokens_per_second=1289.8971 exact=yes\nrun=10 repeat=3 pattern=ABBA slot=2 variant=candidate tokens=8192 seconds=6.444003 tokens_per_second=1271.2595 exact=yes\nrun=11 repeat=3 pattern=ABBA slot=3 variant=candidate tokens=8192 seconds=6.446444 tokens_per_second=1270.7781 exact=yes\nrun=12 repeat=3 pattern=ABBA slot=4 variant=control tokens=8192 seconds=6.343270 tokens_per_second=1291.4475 exact=yes\nrun=13 repeat=4 pattern=BAAB slot=1 variant=candidate tokens=8192 seconds=6.428835 tokens_per_second=1274.2589 exact=yes\nrun=14 repeat=4 pattern=BAAB slot=2 variant=control tokens=8192 seconds=6.343532 tokens_per_second=1291.3941 exact=yes\nrun=15 repeat=4 pattern=BAAB slot=3 variant=control tokens=8192 seconds=6.359142 tokens_per_second=1288.2241 exact=yes\nrun=16 repeat=4 pattern=BAAB slot=4 variant=candidate tokens=8192 seconds=6.445497 tokens_per_second=1270.9648 exact=yes\naggregate variant=control runs=8 tokens=65536 seconds=50.939463 tokens_per_second=1286.5467\naggregate variant=candidate runs=8 tokens=65536 seconds=51.656584 tokens_per_second=1268.6863\ncandidate_delta_percent=-1.3882 exact_runs=16 exact_floats=3973120 vocab=248320\n"
+    },
+    {
+      "name": "no-barriers-8192-repeat",
+      "command": [
+        "rtk",
+        "proxy",
+        "./speed-bench/metal_prefill_variant_bench",
+        "-m",
+        "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        "--ple",
+        "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf",
+        "--prompt-file",
+        "speed-bench/promessi_sposi.txt",
+        "--prefill-chunk",
+        "8192",
+        "--prefix-tokens",
+        "8192",
+        "--warmup-tokens",
+        "8192",
+        "--candidate-env",
+        "DS4_QWEN4_Q8_PREFILL_NO_SIMD_BARRIERS",
+        "--candidate-value",
+        "1",
+        "--repeats",
+        "4"
+      ],
+      "seconds": 124.04176211357117,
+      "returncode": 0,
+      "log": "OUT/q8-prefill/no-barriers-8192-repeat.log",
+      "aggregates": {
+        "control": 1287.3221,
+        "candidate": 1283.9165
+      },
+      "candidate_delta_percent": -0.2646,
+      "exact_runs": 16,
+      "exact_floats": 3973120,
+      "raw_log": "ds4: warming mapped tensor pages: 41.72 GiB\nds4: warmed tensor pages in 0.908s (checksum=317283471)\nds4: PLE sidecar table: /Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf (ple.weight [160, 320001536], CPU-only)\nds4: Metal device Apple M3 Ultra, 512.00 GiB RAM\nds4: Metal 4 tensor API disabled for pre-M5/pre-A19 devices\nds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=off\nds4: Metal model views created in 0.829 ms, residency requested in 357.485 ms, warmup 7.524 ms (mapped 42720.42 MiB from offset 10.51 MiB)\nds4: Metal mapped mmaped model as 1 overlapping shared buffers\nds4: metal backend initialized for graph diagnostics\nds4: memory: KV 0.26 GiB (raw 0.20 + compressed 0.06) + buffers 7.04 GiB + resident model 41.72 GiB = 49.02 GiB planned\nds4: memory detail: ctx=8193 prefill_cap=8192 raw_kv_rows=8193 compressed_kv_rows=2049 backend=metal\nmetal-prefill-variant-bench: model=/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf prompt=speed-bench/promessi_sposi.txt prefix=8192 initial=0 warmup=8192 ctx=8193 repeats=4 candidate_env=DS4_QWEN4_Q8_PREFILL_NO_SIMD_BARRIERS candidate_value=1 prefill_chunk=8192\nrun=1 repeat=1 pattern=ABBA slot=1 variant=control tokens=8192 seconds=6.371301 tokens_per_second=1285.7657 exact=yes\nrun=2 repeat=1 pattern=ABBA slot=2 variant=candidate tokens=8192 seconds=6.386269 tokens_per_second=1282.7521 exact=yes\nrun=3 repeat=1 pattern=ABBA slot=3 variant=candidate tokens=8192 seconds=6.380275 tokens_per_second=1283.9572 exact=yes\nrun=4 repeat=1 pattern=ABBA slot=4 variant=control tokens=8192 seconds=6.347578 tokens_per_second=1290.5710 exact=yes\nrun=5 repeat=2 pattern=BAAB slot=1 variant=candidate tokens=8192 seconds=6.372284 tokens_per_second=1285.5673 exact=yes\nrun=6 repeat=2 pattern=BAAB slot=2 variant=control tokens=8192 seconds=6.354669 tokens_per_second=1289.1309 exact=yes\nrun=7 repeat=2 pattern=BAAB slot=3 variant=control tokens=8192 seconds=6.350475 tokens_per_second=1289.9822 exact=yes\nrun=8 repeat=2 pattern=BAAB slot=4 variant=candidate tokens=8192 seconds=6.357608 tokens_per_second=1288.5349 exact=yes\nrun=9 repeat=3 pattern=ABBA slot=1 variant=control tokens=8192 seconds=6.339503 tokens_per_second=1292.2149 exact=yes\nrun=10 repeat=3 pattern=ABBA slot=2 variant=candidate tokens=8192 seconds=6.377488 tokens_per_second=1284.5183 exact=yes\nrun=11 repeat=3 pattern=ABBA slot=3 variant=candidate tokens=8192 seconds=6.384414 tokens_per_second=1283.1248 exact=yes\nrun=12 repeat=3 pattern=ABBA slot=4 variant=control tokens=8192 seconds=6.385676 tokens_per_second=1282.8712 exact=yes\nrun=13 repeat=4 pattern=BAAB slot=1 variant=candidate tokens=8192 seconds=6.409674 tokens_per_second=1278.0681 exact=yes\nrun=14 repeat=4 pattern=BAAB slot=2 variant=control tokens=8192 seconds=6.395314 tokens_per_second=1280.9379 exact=yes\nrun=15 repeat=4 pattern=BAAB slot=3 variant=control tokens=8192 seconds=6.364265 tokens_per_second=1287.1871 exact=yes\nrun=16 repeat=4 pattern=BAAB slot=4 variant=candidate tokens=8192 seconds=6.375807 tokens_per_second=1284.8570 exact=yes\naggregate variant=control runs=8 tokens=65536 seconds=50.908781 tokens_per_second=1287.3221\naggregate variant=candidate runs=8 tokens=65536 seconds=51.043819 tokens_per_second=1283.9165\ncandidate_delta_percent=-0.2646 exact_runs=16 exact_floats=3973120 vocab=248320\n"
+    }
+  ],
+  "main_checkout_validation": {
+    "kernel_shapes_passed": 14,
+    "exact_runs": 4,
+    "exact_floats": 993280,
+    "log": "ds4: warming mapped tensor pages: 41.72 GiB\nds4: warmed tensor pages in 0.919s (checksum=317283471)\nds4: PLE sidecar table: /Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf (ple.weight [160, 320001536], CPU-only)\nds4: Metal device Apple M3 Ultra, 512.00 GiB RAM\nds4: Metal 4 tensor API disabled for pre-M5/pre-A19 devices\nds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=off\nds4: Metal model views created in 1.074 ms, residency requested in 389.519 ms, warmup 7.618 ms (mapped 42720.42 MiB from offset 10.51 MiB)\nds4: Metal mapped mmaped model as 1 overlapping shared buffers\nds4: metal backend initialized for graph diagnostics\nds4: memory: KV 0.03 GiB (raw 0.03 + compressed 0.01) + buffers 0.87 GiB + resident model 41.72 GiB = 42.62 GiB planned\nds4: memory detail: ctx=1025 prefill_cap=1024 raw_kv_rows=1025 compressed_kv_rows=257 backend=metal\nmetal-prefill-variant-bench: model=/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf prompt=speed-bench/promessi_sposi.txt prefix=1024 initial=0 warmup=1024 ctx=1025 repeats=1 candidate_env=DS4_QWEN4_Q8_PREFILL_UNPACK candidate_value=0 prefill_chunk=1024\nrun=1 repeat=1 pattern=ABBA slot=1 variant=control tokens=1024 seconds=0.872898 tokens_per_second=1173.1038 exact=yes\nrun=2 repeat=1 pattern=ABBA slot=2 variant=candidate tokens=1024 seconds=0.876599 tokens_per_second=1168.1510 exact=yes\nrun=3 repeat=1 pattern=ABBA slot=3 variant=candidate tokens=1024 seconds=0.876488 tokens_per_second=1168.2989 exact=yes\nrun=4 repeat=1 pattern=ABBA slot=4 variant=control tokens=1024 seconds=0.873280 tokens_per_second=1172.5907 exact=yes\naggregate variant=control runs=2 tokens=2048 seconds=1.746178 tokens_per_second=1172.8472\naggregate variant=candidate runs=2 tokens=2048 seconds=1.753087 tokens_per_second=1168.2250\ncandidate_delta_percent=-0.3941 exact_runs=4 exact_floats=993280 vocab=248320\n",
+    "built": [
+      "ds4",
+      "ds4-bench",
+      "ds4-server",
+      "speed-bench/metal_prefill_variant_bench"
+    ],
+    "sha256": {
+      "ds4.c": "4ec560198628f5fcda2ce52218c6a13cd940c57f0194b6317b29819bec0f0d95",
+      "ds4_gpu.h": "8cefcddf2b78b04287d3b0905722f185ead1320e5a89a7f917c0798cd795770c",
+      "ds4_metal.m": "574e6dadc05b8fe801677f1e7cd6ad72af17cca4fb146efe8c67d498d9376d07",
+      "metal/dense.metal": "bd1e43221d2e011a5245a78d2fd44f216d78fbd5d33375a64b003f772c75ce94",
+      "ds4": "6727e1bc84811d98bba2b912df5f6c891d18072e293cdfef2641a917d45e44e3",
+      "ds4-bench": "559108eecf7f8b88b4f717a8a8815a58b59491e4491d2b11cc9884c43234d87f",
+      "ds4-server": "aeec28ba78d0cd57251f9a4ece42bc1928a3e65fd837bfd9834726709f8a2ec0"
+    }
+  }
+}

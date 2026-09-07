@@ -381,6 +381,43 @@ kernel void kernel_qwen4_conv_stream(
     for (uint t = 0; t + 1 < K; t++) state[t * C + c] = win[t];
 }
 
+#define QWEN4_CONV_BLOCK 64u
+/* Only incoming block windows need a snapshot; raw rows inside each block
+ * stay private to its channel thread until they have entered the window. */
+kernel void kernel_qwen4_conv_halo(
+        constant ds4_metal_args_qwen4_conv_stream &args,
+        device const float *x, device const float *state, device float *halo,
+        uint gid [[thread_position_in_grid]]) {
+    const uint C = args.n_channels, H = args.conv_kernel - 1u;
+    const uint blocks = 1u + (args.n_tokens - 1u) / QWEN4_CONV_BLOCK;
+    if (gid >= (uint64_t)blocks * H * C) return;
+    const uint block = gid / (H * C), t = gid / C % H, c = gid % C;
+    halo[gid] = block == 0 ? state[t * C + c] : x[(uint64_t)(block * QWEN4_CONV_BLOCK - H + t) * C + c];
+}
+
+kernel void kernel_qwen4_conv_blocked(
+        constant ds4_metal_args_qwen4_conv_stream &args,
+        device float *x, device float *state, device const float *weight,
+        device const float *halo,
+        uint gid [[thread_position_in_grid]]) {
+    const uint C = args.n_channels, K = args.conv_kernel;
+    const uint c = gid % C, block = gid / C, start = block * QWEN4_CONV_BLOCK;
+    if (start >= args.n_tokens) return;
+    float win[3], taps[4];
+    for (uint t = 0; t + 1u < K; t++) win[t] = halo[((uint64_t)block * (K - 1u) + t) * C + c];
+    for (uint t = 0; t < K; t++) taps[t] = weight[c * K + t];
+    const uint end = start + min(QWEN4_CONV_BLOCK, args.n_tokens - start);
+    for (uint tok = start; tok < end; tok++) {
+        const float raw = x[(uint64_t)tok * C + c];
+        float acc = taps[K - 1u] * raw;
+        for (uint t = 0; t + 1u < K; t++) acc += taps[t] * win[t];
+        for (uint t = 0; t + 2u < K; t++) win[t] = win[t + 1u];
+        win[K - 2u] = raw;
+        x[(uint64_t)tok * C + c] = args.apply_silu ? qwen4_silu(acc) : acc;
+    }
+    if (end == args.n_tokens) for (uint t = 0; t + 1u < K; t++) state[t * C + c] = win[t];
+}
+
 struct ds4_metal_args_qwen4_gdn_prep {
     uint32_t n_tokens;
     uint32_t n_k_head;
@@ -2351,7 +2388,7 @@ kernel void kernel_qwen4_moe_mm_down(
     uint work_count = count, work_start = 0;
     if (qwen4_moe_tail_base) {
         const uint remainder = count % qwen4_moe_tail_base;
-        const uint tail_tt = remainder <= 8u ? 8u : remainder <= 16u ? 16u : 32u;
+        const uint tail_tt = remainder <= 8u ? 8u : remainder <= 16u ? 16u : remainder <= 32u ? 32u : 64u;
         if (TT < qwen4_moe_tail_base) {
             if (!remainder || tail_tt != TT) return;
             work_start = count - remainder;
@@ -2436,6 +2473,9 @@ kernel void kernel_qwen4_moe_mm_down<2>(constant ds4_metal_args_qwen4_moe_mm &, 
 
 template [[host_name("kernel_qwen4_moe_mm_down")]]
 kernel void kernel_qwen4_moe_mm_down<4>(constant ds4_metal_args_qwen4_moe_mm &, device const char *, device const int32_t *, device const int32_t *, device const float *, device float *, uint3, ushort, ushort);
+
+template [[host_name("kernel_qwen4_moe_mm_down_nt8")]]
+kernel void kernel_qwen4_moe_mm_down<8>(constant ds4_metal_args_qwen4_moe_mm &, device const char *, device const int32_t *, device const int32_t *, device const float *, device float *, uint3, ushort, ushort);
 
 /* --- prefill: dense tiled GEMM for f32/f16/q8_0 weights ----------------- */
 

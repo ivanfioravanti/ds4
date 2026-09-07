@@ -54,12 +54,17 @@ static int check(const void *map, uint64_t bytes, const format *f, uint32_t T) {
     ok = ds4_gpu_tensor_write(x, 0, host_x, (uint64_t)T * D * sizeof(float)) &&
          ds4_gpu_tensor_write(ids, 0, host_ids, (uint64_t)T * S * sizeof(int32_t)) &&
          ds4_gpu_qwen4_moe_build_lists_tensor(lists, counts, ids, T, S, E, T);
-    for (int run = 0; run < 7 && ok; run++) {
-        ok = setenv("DS4_QWEN4_MOE_MM_SPECIALIZE", run > 0 && run < 6 ? "1" : "0", 1) == 0;
-        const char *tiles[] = {"4", "1", "2", "4", "4", "2", "4"};
+    for (int run = 0; run < 14 && ok; run++) {
+        ok = setenv("DS4_QWEN4_MOE_MM_SPECIALIZE", (run > 0 && run < 6) || run == 7 || run == 8 ? "1" : "0", 1) == 0;
+        const char *tiles[] = {"4", "1", "2", "4", "4", "2", "4", "4", "4", "4", "4", "4", "4", "4"};
         ok = ok && setenv("DS4_QWEN4_MOE_MID_NT", tiles[run], 1) == 0 &&
-             setenv("DS4_QWEN4_MOE_DOWN_NT", tiles[run], 1) == 0;
-        ok = ok && setenv("DS4_QWEN4_MOE_TAILS", run == 4 || run == 5 ? "1" : "0", 1) == 0;
+             setenv("DS4_QWEN4_MOE_DOWN_NT", run >= 7 ? "8" : tiles[run], 1) == 0;
+        ok = ok && setenv("DS4_QWEN4_MOE_TAILS", run == 4 || run == 5 || run == 8 || run == 10 ? "1" : "0", 1) == 0;
+        if (run >= 11) {
+            unsetenv("DS4_QWEN4_MOE_DOWN_NT");
+            if (run == 13) unsetenv("DS4_QWEN4_PREFILL_REUSE");
+            else setenv("DS4_QWEN4_PREFILL_REUSE", run == 12 ? "1" : "0", 1);
+        }
         ok = ok && ds4_gpu_tensor_fill_f32(mid, NAN, mid_n) &&
              ds4_gpu_tensor_fill_f32(out, NAN, out_n) &&
              ds4_gpu_begin_commands() &&
@@ -84,6 +89,7 @@ static int check(const void *map, uint64_t bytes, const format *f, uint32_t T) {
     }
     if (ok) printf("PASS Qwen MoE specialization type=%u T=%u mid/down exact, padding intact\n", f->type, T);
 done:
+    unsetenv("DS4_QWEN4_PREFILL_REUSE");
     unsetenv("DS4_QWEN4_MOE_MM_SPECIALIZE");
     unsetenv("DS4_QWEN4_MOE_TAILS");
     unsetenv("DS4_QWEN4_MOE_MID_NT");
@@ -97,7 +103,7 @@ done:
 int main(void) {
     format formats[] = {{12,144,256,256,0,0,0}, {16,66,256,256,0,0,0}, {10,84,256,640,0,0,0},
                         {8,34,32,256,0,0,0}, {39,17,32,256,0,0,0}, {2,18,32,256,0,0,0}};
-    const uint32_t sizes[] = {8, 9, 16, 17, 24, 31, 32, 33, 48, 65, 257};
+    const uint32_t sizes[] = {8, 9, 16, 17, 24, 31, 32, 33, 48, 63, 64, 65, 95, 96, 97, 127, 128, 129, 257, 8191, 8192, 8193};
     const uint64_t page = (uint64_t)sysconf(_SC_PAGESIZE);
     uint64_t bytes = 0;
     for (unsigned i = 0; i < sizeof(formats) / sizeof(*formats); i++) {

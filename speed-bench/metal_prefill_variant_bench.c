@@ -25,6 +25,7 @@ typedef struct {
     const char *prompt_path;
     const char *candidate_env;
     const char *candidate_value;
+    const char *control_value;
     int prefill_chunk;
     int prefix_tokens;
     int initial_tokens;
@@ -48,6 +49,7 @@ static void usage(FILE *fp, const char *argv0) {
             "  --prompt-file PATH     token source (default: ds4.c)\n"
             "  --candidate-env NAME   unset NAME for control, set it for candidate\n"
             "  --candidate-value TEXT candidate env value (default: 1)\n"
+            "  --control-value TEXT   explicit control env value (default: unset)\n"
             "  --prefill-chunk N      tokens per chunk (default: 4096)\n"
             "  --prefix-tokens N      final prefill length (default: 8192)\n"
             "  --initial-tokens N     untimed live prefix before appending to that length\n"
@@ -105,6 +107,8 @@ static bench_config parse_options(int argc, char **argv) {
             cfg.prompt_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--ple")) {
             cfg.ple_path = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--control-value")) {
+            cfg.control_value = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--candidate-value")) {
             cfg.candidate_value = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--prefill-chunk")) {
@@ -207,7 +211,7 @@ static char *read_text(const char *path) {
 static int select_variant(const bench_config *cfg, int variant) {
     const int env_rc =
         variant == 0
-            ? unsetenv(cfg->candidate_env)
+            ? (cfg->control_value ? setenv(cfg->candidate_env, cfg->control_value, 1) : unsetenv(cfg->candidate_env))
             : setenv(cfg->candidate_env, cfg->candidate_value, 1);
     if (env_rc != 0) {
         fprintf(stderr,
@@ -356,7 +360,7 @@ int main(int argc, char **argv) {
 
     fprintf(stderr,
             "%s: model=%s prompt=%s prefix=%d initial=%d warmup=%d ctx=%d repeats=%d "
-            "candidate_env=%s candidate_value=%s prefill_chunk=%d\n",
+            "candidate_env=%s candidate_value=%s control_value=%s prefill_chunk=%d\n",
             BENCH_NAME,
             cfg.model_path,
             cfg.prompt_path,
@@ -367,6 +371,7 @@ int main(int argc, char **argv) {
             cfg.repeats,
             cfg.candidate_env,
             cfg.candidate_value,
+            cfg.control_value ? cfg.control_value : "<unset>",
             cfg.prefill_chunk);
 
     for (int variant = 0; variant < VARIANT_COUNT; variant++) {

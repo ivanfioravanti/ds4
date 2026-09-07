@@ -182,6 +182,19 @@ used a 512 GiB machine, not a physical 64 GB system. Vision uses a separate enco
 [Qwen setup](docs/QWEN38_FLASH_NEXT.md)
 for details; if using `DS4_GGUF_DIR`, adjust the PLE path accordingly.
 
+On M3 Ultra, Qwen prefill unpacks eligible Q8 projections once into reusable
+FP16 scratch by default. The Q2 model uses up to 60 MiB of this scratch;
+measured 8K prefill improved about 1.7–1.8% with bit-identical compared logits.
+Set `DS4_QWEN4_Q8_PREFILL_UNPACK=0` to restore the original path. See the
+[prefill measurements](speed-bench/qwen38-q8-prefill.md).
+
+Additional M3 Ultra prefill reuse improves measured throughput over that
+baseline by 1.8% at 1K and 2.8–2.9% at 8K, with bit-identical compared logits.
+It parallelizes GDN convolution in blocks and reuses Q2 down weights across
+64-token tiles for large batches. Set `DS4_QWEN4_PREFILL_REUSE=0` to roll back
+these changes. See the [results and limits](speed-bench/qwen38-prefill-structural.md).
+
+
 Speculative decoding is opt-in. GLM and Qwen use `--mtp`; Flash DSpark needs a matching
 support GGUF. It can improve generation, but not every workload benefits.
 Read [speculative decoding](docs/SPECULATIVE_DECODING.md) for setup and the
