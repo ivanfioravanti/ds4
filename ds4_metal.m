@@ -5395,6 +5395,17 @@ static ds4_gpu_mv_dispatch ds4_gpu_make_q8_0_mv_dispatch(void) {
     };
 }
 
+/* Single-token F16/F32 matvecs with few output rows (the Qwen hyper-connection
+ * low-rank down projections and routers) launch one row per SIMD group on M5,
+ * where two-row tiles leave most of the 40 cores idle.  The per-row K walk,
+ * simdgroup count and reduction tree are unchanged.  DS4_METAL_PLAIN_MV_NR0
+ * forces 1 or 2 rows on any device. */
+static bool ds4_gpu_plain_mv_single_row(uint64_t out_dim) {
+    const uint64_t override = ds4_gpu_env_u64("DS4_METAL_PLAIN_MV_NR0", 0u, 0u, 2u);
+    if (override) return override == 1u;
+    return out_dim <= 1024u && ds4_gpu_device_is_m5_apple_silicon();
+}
+
 static ds4_gpu_mv_dispatch ds4_gpu_make_plain_mv_dispatch(
         uint64_t in_dim,
         int      f32_weights) {
@@ -20913,6 +20924,12 @@ int ds4_gpu_matmul_f16_tensor(
                 mv_dispatch.nr0 = 4;
                 mv_dispatch.smem = 32u * 4u * sizeof(float);
             }
+            /* One row per SIMD group doubles the threadgroup count of narrow
+             * projections; every row keeps its K walk and reduction tree. */
+            if (ds4_gpu_plain_mv_single_row(out_dim)) {
+                mv_dispatch.nr0 = 1;
+                mv_dispatch.smem = 32u * sizeof(float);
+            }
             mv_args.nr0 = mv_dispatch.nr0;
             id<MTLComputePipelineState> pipeline =
                 ds4_gpu_get_mul_mv_pipeline(mv_dispatch.function_name, mv_dispatch.nsg);
@@ -21771,6 +21788,10 @@ int ds4_gpu_matmul_f32_tensor(
         if (n_tok == 1) {
             ds4_gpu_q8_0_matvec_args mv_args = ds4_gpu_make_f32_mv_args(in_dim, out_dim, 1);
             ds4_gpu_mv_dispatch mv_dispatch = ds4_gpu_make_plain_mv_dispatch(in_dim, 1);
+            if (ds4_gpu_plain_mv_single_row(out_dim)) {
+                mv_dispatch.nr0 = 1;
+                mv_dispatch.smem = 32u * sizeof(float);
+            }
             mv_args.nr0 = mv_dispatch.nr0;
             id<MTLComputePipelineState> pipeline =
                 ds4_gpu_get_mul_mv_pipeline(mv_dispatch.function_name, mv_dispatch.nsg);
