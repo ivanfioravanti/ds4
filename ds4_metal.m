@@ -47423,6 +47423,7 @@ enum {
     QWEN4_K_IDX_SCORE,
     QWEN4_K_IDX_SCORE_VEC,
     QWEN4_K_IDX_SELECT,
+    QWEN4_K_IDX_SELECT_PRE,
     QWEN4_K_IDX_SCORE_MM,
     QWEN4_K_IDX_EXPAND,
     QWEN4_K_ATTN_DECODE_NPT8,
@@ -47492,6 +47493,7 @@ static const char *const qwen4_kernel_names[QWEN4_K_COUNT] = {
     "kernel_qwen4_idx_score",
     "kernel_qwen4_idx_score_vec",
     "kernel_qwen4_idx_select",
+    "kernel_qwen4_idx_select_pre",
     "kernel_qwen4_idx_score_mm",
     "kernel_qwen4_idx_expand",
     "kernel_qwen4_attn_decode_npt8",
@@ -48138,12 +48140,12 @@ int ds4_gpu_qwen4_idx_block_key_tensor(
 }
 
 int ds4_gpu_qwen4_idx_score_tensor(
-        ds4_gpu_tensor *score, const ds4_gpu_tensor *iq, const ds4_gpu_tensor *block_key,
+        ds4_gpu_tensor *score, ds4_gpu_tensor *tile_max, const ds4_gpu_tensor *iq, const ds4_gpu_tensor *block_key,
         uint32_t n_tokens, uint32_t n_blocks, uint32_t n_idx_head, uint32_t idx_dim,
         uint32_t pos0, uint32_t ratio) {
     struct { uint32_t n_tokens, n_blocks, n_idx_head, idx_dim, pos0, ratio, pad0, pad1; } args =
         { n_tokens, n_blocks, n_idx_head, idx_dim, pos0, ratio, 0, 0 };
-    qwen4_bind b[3];
+    qwen4_bind b[4];
     if (n_tokens == 0 || n_blocks == 0 || ratio == 0 ||
         !qwen4_bind_tensor(&b[0], iq, (uint64_t)n_tokens * n_idx_head * idx_dim * sizeof(float), "indexer q") ||
         !qwen4_bind_tensor(&b[1], block_key, (uint64_t)n_blocks * idx_dim * 2u, "block keys") ||
@@ -48154,24 +48156,45 @@ int ds4_gpu_qwen4_idx_score_tensor(
         return qwen4_dispatch(QWEN4_K_IDX_SCORE_MM, &args, sizeof(args), b, 3,
                               MTLSizeMake((n_blocks + 63) / 64, (n_tokens + 15) / 16, 1), MTLSizeMake(128, 1, 1), 0);
     }
-    /* staged queries and vector key loads; measured on M5, other devices
-     * keep the scalar scorer */
+    /* staged queries and vector key loads, plus the tile maxima the
+     * prefiltered selector needs; measured on M5, other devices keep the
+     * scalar scorer */
     const int vec_override = ds4_gpu_env_bool("DS4_QWEN4_IDX_SCORE_VEC");
-    const bool vec = n_idx_head * idx_dim <= 512u && (idx_dim & 3u) == 0u &&
+    const bool vec = tile_max && n_idx_head * idx_dim <= 512u && (idx_dim & 3u) == 0u &&
         (vec_override >= 0 ? vec_override != 0 : ds4_gpu_device_is_m5_apple_silicon());
-    return qwen4_dispatch(vec ? QWEN4_K_IDX_SCORE_VEC : QWEN4_K_IDX_SCORE, &args, sizeof(args), b, 3,
+    if (vec) {
+        if (!qwen4_bind_tensor(&b[3], tile_max, (uint64_t)n_tokens * ((n_blocks + 7u) / 8u) * sizeof(uint32_t),
+                               "indexer tile maxima")) return 0;
+        return qwen4_dispatch(QWEN4_K_IDX_SCORE_VEC, &args, sizeof(args), b, 4,
+                              MTLSizeMake((n_blocks + 127) / 128, n_tokens, 1), MTLSizeMake(128, 1, 1), 0);
+    }
+    return qwen4_dispatch(QWEN4_K_IDX_SCORE, &args, sizeof(args), b, 3,
                           MTLSizeMake((n_blocks + 127) / 128, n_tokens, 1), MTLSizeMake(128, 1, 1), 0);
 }
 
 int ds4_gpu_qwen4_idx_select_tensor(
-        ds4_gpu_tensor *sel, const ds4_gpu_tensor *score, uint32_t n_blocks, uint32_t n_tokens, uint32_t top_k) {
+        ds4_gpu_tensor *sel, const ds4_gpu_tensor *score, const ds4_gpu_tensor *tile_max,
+        uint32_t n_blocks, uint32_t n_tokens, uint32_t top_k) {
     struct { uint32_t n_tokens, n_blocks, top_k, pad0; } args = { n_tokens, n_blocks, top_k, 0 };
-    qwen4_bind b[2];
+    qwen4_bind b[3];
     if (n_tokens == 0 || top_k == 0 || top_k > n_blocks ||
         !qwen4_bind_tensor(&b[0], score, (uint64_t)n_tokens * n_blocks * sizeof(float), "indexer scores") ||
-        !qwen4_bind_tensor(&b[1], sel, (uint64_t)n_tokens * top_k * sizeof(int32_t), "selected blocks")) {
+        !qwen4_bind_tensor(&b[2], sel, (uint64_t)n_tokens * top_k * sizeof(int32_t), "selected blocks")) {
         return 0;
     }
+    /* Long rows: bound the k-th score by the k-th tile maximum and select
+     * over the surviving tiles in threadgroup memory (exact; see the kernel).
+     * The scorer that emits tile maxima only runs for decode batches. */
+    const int pre_override = ds4_gpu_env_bool("DS4_QWEN4_IDX_PREFILTER");
+    const bool pre = tile_max && n_blocks > 8u * top_k &&
+        (pre_override >= 0 ? pre_override != 0 : ds4_gpu_device_is_m5_apple_silicon());
+    if (pre) {
+        if (!qwen4_bind_tensor(&b[1], tile_max, (uint64_t)n_tokens * ((n_blocks + 7u) / 8u) * sizeof(uint32_t),
+                               "indexer tile maxima")) return 0;
+        return qwen4_dispatch(QWEN4_K_IDX_SELECT_PRE, &args, sizeof(args), b, 3,
+                              MTLSizeMake(n_tokens, 1, 1), MTLSizeMake(1024, 1, 1), 0);
+    }
+    b[1] = b[2];
     return qwen4_dispatch(QWEN4_K_IDX_SELECT, &args, sizeof(args), b, 2,
                           MTLSizeMake(n_tokens, 1, 1), MTLSizeMake(1024, 1, 1), 0);
 }

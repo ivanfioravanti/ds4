@@ -3401,11 +3401,12 @@ int ds4_gpu_qwen4_idx_block_key_tensor(
         uint32_t block0, uint32_t n_blocks, uint32_t ratio, uint32_t idx_dim, uint32_t n_rot,
         float rope_base, float eps);
 int ds4_gpu_qwen4_idx_score_tensor(
-        ds4_gpu_tensor *score, const ds4_gpu_tensor *iq, const ds4_gpu_tensor *block_key,
+        ds4_gpu_tensor *score, ds4_gpu_tensor *tile_max, const ds4_gpu_tensor *iq, const ds4_gpu_tensor *block_key,
         uint32_t n_tokens, uint32_t n_blocks, uint32_t n_idx_head, uint32_t idx_dim,
         uint32_t pos0, uint32_t ratio);
 int ds4_gpu_qwen4_idx_select_tensor(
-        ds4_gpu_tensor *sel, const ds4_gpu_tensor *score, uint32_t n_blocks, uint32_t n_tokens, uint32_t top_k);
+        ds4_gpu_tensor *sel, const ds4_gpu_tensor *score, const ds4_gpu_tensor *tile_max,
+        uint32_t n_blocks, uint32_t n_tokens, uint32_t top_k);
 int ds4_gpu_qwen4_idx_expand_tensor(
         ds4_gpu_tensor *sel_tokens, ds4_gpu_tensor *n_sel, const ds4_gpu_tensor *sel_blocks,
         uint32_t n_tokens, uint32_t n_sel_blocks, uint32_t ratio, uint32_t pos0, uint32_t sel_stride);

@@ -54838,7 +54838,7 @@ typedef struct {
     ds4_gpu_tensor *ple_emb, *ple_key, *ple_val, *ple_gated, *ple_normed, *ple_hist;
     int ple_prev[DS4_MAX_PLE_NGRAM];
     ds4_gpu_tensor *qg, *kp, *vp, *iq, *ik, *q, *gate, *iqn, *attn_o;
-    ds4_gpu_tensor *score, *sel_blocks, *sel_tokens, *n_sel, *attn_part;
+    ds4_gpu_tensor *score, *tile_max, *sel_blocks, *sel_tokens, *n_sel, *attn_part;
     ds4_gpu_tensor *router, *selected, *weights, *mid, *part, *sh_gate_logit;
     ds4_gpu_tensor *moe_lists, *moe_counts, *sh_gate, *sh_up, *sh_mid, *sh_out, *hc_u, *hc_lo_act;
     ds4_gpu_tensor *logits;
@@ -54977,7 +54977,7 @@ static void qwen4_graph_free(ds4_qwen4_gpu_graph *g) {
         &g->R, &g->xn, &g->lo, &g->inj, &g->mixed, &g->blk, &g->qkv, &g->z, &g->ga, &g->gb, &g->lin_o,
         &g->ple_emb, &g->ple_key, &g->ple_val, &g->ple_gated, &g->ple_normed, &g->ple_hist,
         &g->qg, &g->kp, &g->vp, &g->iq, &g->ik, &g->q, &g->gate, &g->iqn, &g->attn_o,
-        &g->score, &g->sel_blocks, &g->sel_tokens, &g->n_sel, &g->attn_part,
+        &g->score, &g->tile_max, &g->sel_blocks, &g->sel_tokens, &g->n_sel, &g->attn_part,
         &g->router, &g->selected, &g->weights, &g->mid, &g->part, &g->sh_gate_logit, &g->logits,
         &g->moe_lists, &g->moe_counts, &g->sh_gate, &g->sh_up, &g->sh_mid, &g->sh_out, &g->hc_u, &g->hc_lo_act,
         &g->inj_alt, &g->mtp_e, &g->mtp_cat, &g->mtp_proj, &g->mtp_R, &g->mtp_argmax, &g->mtp_argmax_tmp, &g->snap_ple_hist, &g->pos3,
@@ -55063,6 +55063,7 @@ static bool qwen4_graph_alloc(ds4_qwen4_gpu_graph *g, const ds4_weights *w, uint
     QWEN4_ALLOC(iqn, T * iq_dim);
     QWEN4_ALLOC(attn_o, T * q_dim);
     QWEN4_ALLOC(score, T * g->n_block_cap);
+    QWEN4_ALLOC(tile_max, T * (g->n_block_cap / 8u + 1u));
     QWEN4_ALLOC(sel_blocks, T * g->k_blocks);
     QWEN4_ALLOC(sel_tokens, T * g->sel_stride);
     QWEN4_ALLOC(n_sel, T);
@@ -55180,12 +55181,12 @@ static bool qwen4_graph_fused(uint32_t T) {
 }
 
 /* top-k blocks per query: radix select (DS4_QWEN4_NO_IDX_SELECT=1 restores the argsort path) */
-static int qwen4_idx_select(ds4_gpu_tensor *sel, const ds4_gpu_tensor *score, uint32_t n_blocks,
-                            uint32_t n_tokens, uint32_t top_k) {
+static int qwen4_idx_select(ds4_gpu_tensor *sel, const ds4_gpu_tensor *score, const ds4_gpu_tensor *tile_max,
+                            uint32_t n_blocks, uint32_t n_tokens, uint32_t top_k) {
     static int no_select = -1;
     if (no_select < 0) no_select = getenv("DS4_QWEN4_NO_IDX_SELECT") != NULL;
     return no_select ? ds4_gpu_indexer_topk_tensor(sel, score, n_blocks, n_tokens, top_k)
-                     : ds4_gpu_qwen4_idx_select_tensor(sel, score, n_blocks, n_tokens, top_k);
+                     : ds4_gpu_qwen4_idx_select_tensor(sel, score, tile_max, n_blocks, n_tokens, top_k);
 }
 
 /* grouped norm -> low-rank gate -> mixed; inject may be NULL (final mixer) */
@@ -55318,9 +55319,11 @@ static bool qwen4_graph_attention(ds4_qwen4_gpu_graph *g, const ds4_model *m, co
                 (uint64_t)n_dense * DS4_N_INDEXER_HEAD * DS4_N_INDEXER_HEAD_DIM * sizeof(float),
                 (uint64_t)n_sparse * DS4_N_INDEXER_HEAD * DS4_N_INDEXER_HEAD_DIM * sizeof(float));
         bool ok = q && gate && o && iqn &&
-            ds4_gpu_qwen4_idx_score_tensor(g->score, iqn, g->layer_block_key[il], n_sparse, n_blocks_after,
+            ds4_gpu_qwen4_idx_score_tensor(g->score, n_sparse <= 2u ? g->tile_max : NULL, iqn,
+                                           g->layer_block_key[il], n_sparse, n_blocks_after,
                                            DS4_N_INDEXER_HEAD, DS4_N_INDEXER_HEAD_DIM, sp0, ratio) &&
-            qwen4_idx_select(g->sel_blocks, g->score, n_blocks_after, n_sparse, g->k_blocks) &&
+            qwen4_idx_select(g->sel_blocks, g->score, n_sparse <= 2u ? g->tile_max : NULL,
+                             n_blocks_after, n_sparse, g->k_blocks) &&
             ds4_gpu_qwen4_idx_expand_tensor(g->sel_tokens, g->n_sel, g->sel_blocks, n_sparse, g->k_blocks, ratio,
                                             sp0, g->sel_stride) &&
             ds4_gpu_qwen4_attn_decode_tensor(o, q, gate, g->layer_k_cache[il], g->layer_v_cache[il],

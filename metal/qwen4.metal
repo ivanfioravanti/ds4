@@ -1147,9 +1147,11 @@ kernel void kernel_qwen4_idx_score_vec(
         device const float *iq,          /* [T][Hi*Di] */
         device const half  *block_key,   /* [n_blocks][Di] */
         device float       *score,       /* [T][n_blocks] */
+        device uint        *tile_max,    /* [T][(n_blocks+7)/8] score keys */
         uint3 tgpig [[threadgroup_position_in_grid]],
         ushort tid [[thread_index_in_threadgroup]],
-        ushort3 ntg [[threads_per_threadgroup]]) {
+        ushort3 ntg [[threads_per_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]]) {
     threadgroup float qs[4 * 128];
     const uint tok = tgpig.y;
     const uint Di = args.idx_dim;
@@ -1159,27 +1161,35 @@ kernel void kernel_qwen4_idx_score_vec(
     for (uint i = tid; i < nq; i += ntg.x) qs[i] = q[i];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint b = tgpig.x * ntg.x + tid;
-    if (b >= args.n_blocks) return;
     const uint visible = (args.pos0 + tok + 1) / args.ratio;
-    if (b >= visible) {
-        score[(uint64_t)tok * args.n_blocks + b] = -3.0e38f;
-        return;
-    }
-    device const half4 *key = (device const half4 *)(block_key + (uint64_t)b * Di);
-    float sum = 0.0f;
-    for (uint h = 0; h < args.n_idx_head; h++) {
-        const threadgroup float *qh = qs + h * Di;
-        float dot = 0.0f;
-        for (uint d = 0; d < Di; d += 4) {
-            const half4 k = key[d >> 2];
-            dot += qh[d] * (float)k.x;
-            dot += qh[d + 1] * (float)k.y;
-            dot += qh[d + 2] * (float)k.z;
-            dot += qh[d + 3] * (float)k.w;
+    const bool live = b < args.n_blocks && b < visible;
+    float sum = -3.0e38f;
+    if (live) {
+        device const half4 *key = (device const half4 *)(block_key + (uint64_t)b * Di);
+        sum = 0.0f;
+        for (uint h = 0; h < args.n_idx_head; h++) {
+            const threadgroup float *qh = qs + h * Di;
+            float dot = 0.0f;
+            for (uint d = 0; d < Di; d += 4) {
+                const half4 k = key[d >> 2];
+                dot += qh[d] * (float)k.x;
+                dot += qh[d + 1] * (float)k.y;
+                dot += qh[d + 2] * (float)k.z;
+                dot += qh[d + 3] * (float)k.w;
+            }
+            sum += max(dot, 0.0f);
         }
-        sum += max(dot, 0.0f);
     }
-    score[(uint64_t)tok * args.n_blocks + b] = sum;
+    if (b < args.n_blocks) score[(uint64_t)tok * args.n_blocks + b] = sum;
+    /* the selector's key of this block (-inf and missing blocks map to 0),
+     * reduced over the aligned eight-lane group; every lane joins the
+     * shuffles */
+    uint key = live ? as_type<uint>(max(sum, 0.0f)) : 0u;
+    key = max(key, simd_shuffle_xor(key, 1));
+    key = max(key, simd_shuffle_xor(key, 2));
+    key = max(key, simd_shuffle_xor(key, 4));
+    const uint n_tiles = (args.n_blocks + 7u) / 8u;
+    if ((tiisg & 7u) == 0u && (b >> 3) < n_tiles) tile_max[(uint64_t)tok * n_tiles + (b >> 3)] = key;
 }
 
 /* Matrix-unit block scorer for 4 heads x 128 dims: a threadgroup scores 16
@@ -1348,6 +1358,180 @@ kernel void kernel_qwen4_idx_select(
             if (key > prefix) out[r_gt++] = (int32_t)(b + u);
             else if (key == prefix) { if (r_eq < need) out[eq_base + r_eq] = (int32_t)(b + u); r_eq++; }
         }
+    }
+}
+
+#define QWEN4_IDX_PRE_TILES 512   /* surviving tiles held in threadgroup memory */
+#define QWEN4_IDX_PRE_MAX_TILES 8192
+
+/* Key of entry e of the compact set: tile tiles[e>>3], block e&7. */
+static inline uint qwen4_idx_pre_block(threadgroup const ushort *tiles, uint e) {
+    return (uint)tiles[e >> 3] * 8u + (e & 7u);
+}
+
+/* Radix pass shared by the tile bound and the compact select: the k-th
+ * largest key among n keys, same digit order and suffix-sum ranking as
+ * kernel_qwen4_idx_select.  MODE 0 reads tile maxima, MODE 1 the compact
+ * keys (entries past the last block are skipped), MODE 2 a full score row. */
+template <int MODE>
+static inline void qwen4_idx_radix(device const uint *tm, threadgroup const uint *keys,
+                                   threadgroup const ushort *tiles, device const float *row,
+                                   uint n_blocks, uint n, uint k, uint nth, ushort tid, ushort sgitg, ushort tiisg,
+                                   threadgroup atomic_uint *hist, threadgroup uint *scan, threadgroup uint *found,
+                                   thread uint &prefix_out, thread uint &need_out) {
+    uint prefix = 0, need = k;
+    for (uint pass = 0; pass < 4; pass++) {
+        const uint shift = 24 - 8 * pass;
+        const uint mask_hi = pass == 0 ? 0u : (0xFFFFFFFFu << (shift + 8));
+        for (uint i = tid; i < 256; i += nth) atomic_store_explicit(&hist[i], 0u, memory_order_relaxed);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint e = tid; e < n; e += nth) {
+            uint key;
+            if (MODE == 0) key = tm[e];
+            else if (MODE == 1) { if (qwen4_idx_pre_block(tiles, e) >= n_blocks) continue; key = keys[e]; }
+            else key = as_type<uint>(max(row[e], 0.0f));
+            if ((key & mask_hi) == prefix) atomic_fetch_add_explicit(&hist[(key >> shift) & 0xFFu], 1u, memory_order_relaxed);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        const uint c = tid < 256 ? atomic_load_explicit(&hist[255 - tid], memory_order_relaxed) : 0u;
+        const uint p = simd_prefix_inclusive_sum(c);
+        if (tiisg == 31 && sgitg < 8) scan[sgitg] = p;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid < 256) {
+            uint above = p - c;
+            for (uint g = 0; g < sgitg; g++) above += scan[g];
+            if (above < need && above + c >= need) {
+                found[0] = prefix | ((255u - tid) << shift);
+                found[1] = need - above;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        prefix = found[0]; need = found[1];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    prefix_out = prefix;
+    need_out = need;
+}
+
+/* Prefiltered top-k for one or two decode tokens (see the host comment):
+ * tau = k-th largest tile maximum, survivors = tiles with maximum >= tau,
+ * then the full-row radix select and gather over the survivors' blocks in
+ * threadgroup memory.  Rows with more than QWEN4_IDX_PRE_TILES survivors or
+ * more than QWEN4_IDX_PRE_MAX_TILES tiles run the full-row algorithm. */
+kernel void kernel_qwen4_idx_select_pre(
+        constant ds4_metal_args_qwen4_idx_select & args,
+        device const float *score,     /* [T][n_blocks] */
+        device const uint  *tile_max,  /* [T][n_tiles] */
+        device int32_t     *sel,       /* [T][top_k] */
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]]) {
+    const uint tok = tgpig.x;
+    if (tok >= args.n_tokens) return;
+    const uint nth = ntg.x;
+    const uint n = args.n_blocks;
+    const uint n_tiles = (n + 7u) / 8u;
+    device const float *row = score + (uint64_t)tok * n;
+    device const uint *tm = tile_max + (uint64_t)tok * n_tiles;
+    device int32_t *out = sel + (uint64_t)tok * args.top_k;
+    threadgroup atomic_uint hist[256];
+    threadgroup uint scan[32];
+    threadgroup uint found[2];
+    threadgroup uint keys[QWEN4_IDX_PRE_TILES * 8];
+    threadgroup ushort tiles[QWEN4_IDX_PRE_TILES];
+    threadgroup uint total_surv;
+
+    /* 1. tau: the k-th largest tile maximum (every tile survives when there
+     *    are at most k tiles) */
+    uint tau = 0, tau_need = 0;
+    bool compact = n_tiles <= QWEN4_IDX_PRE_MAX_TILES;
+    if (compact && n_tiles > args.top_k) {
+        qwen4_idx_radix<0>(tm, keys, tiles, row, n, n_tiles, args.top_k, nth, tid, sgitg, tiisg,
+                           hist, scan, found, tau, tau_need);
+    }
+    /* 2. survivors in ascending tile order: contiguous tile chunk per thread,
+     *    ranks by exclusive scan */
+    uint n_surv = 0;
+    const uint tchunk = (n_tiles + nth - 1) / nth;
+    const uint t0 = min((uint)tid * tchunk, n_tiles), t1 = min(t0 + tchunk, n_tiles);
+    if (compact) {
+        for (uint t = t0; t < t1; t++) n_surv += tm[t] >= tau;
+    }
+    uint rank = simd_prefix_exclusive_sum(n_surv);
+    if (tiisg == 31) scan[sgitg] = rank + n_surv;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sgitg == 0) {
+        const uint nsg = (nth + 31) / 32;
+        const uint sv = tiisg < nsg ? scan[tiisg] : 0u;
+        const uint sp = simd_prefix_exclusive_sum(sv);
+        if (tiisg < nsg) scan[tiisg] = sp;
+        if (tiisg == nsg - 1) total_surv = sp + sv;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    rank += scan[sgitg];
+    compact = compact && total_surv <= QWEN4_IDX_PRE_TILES;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (compact) {
+        for (uint t = t0; t < t1; t++) {
+            if (tm[t] < tau) continue;
+            tiles[rank] = (ushort)t;
+            for (uint j = 0; j < 8; j++) {
+                const uint b = t * 8u + j;
+                keys[rank * 8u + j] = b < n ? as_type<uint>(max(row[b], 0.0f)) : 0u;
+            }
+            rank++;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint n_c = compact ? total_surv * 8u : n;
+
+    /* 3. k-th key and equal count over the compact set (or the full row) */
+    uint prefix, need;
+    if (compact) {
+        qwen4_idx_radix<1>(tm, keys, tiles, row, n, n_c, args.top_k, nth, tid, sgitg, tiisg,
+                           hist, scan, found, prefix, need);
+    } else {
+        qwen4_idx_radix<2>(tm, keys, tiles, row, n, n, args.top_k, nth, tid, sgitg, tiisg,
+                           hist, scan, found, prefix, need);
+    }
+    /* Missing blocks of the last tile carry key 0 and must not count as
+     * equals when the k-th key is 0; the block test excludes them below. */
+
+    /* 4. gather: contiguous entry chunk per thread, ranks by exclusive scan */
+    const uint chunk = (n_c + nth - 1) / nth;
+    const uint e0 = min((uint)tid * chunk, n_c), e1 = min(e0 + chunk, n_c);
+    uint n_gt = 0, n_eq = 0;
+    for (uint e = e0; e < e1; e++) {
+        const uint b = compact ? qwen4_idx_pre_block(tiles, e) : e;
+        if (b >= n) continue;
+        const uint key = compact ? keys[e] : as_type<uint>(max(row[e], 0.0f));
+        n_gt += key > prefix; n_eq += key == prefix;
+    }
+    uint r_gt, r_eq;
+    for (uint which = 0; which < 2; which++) {
+        const uint v = which == 0 ? n_gt : n_eq;
+        const uint p = simd_prefix_exclusive_sum(v);
+        if (tiisg == 31) scan[sgitg] = p + v;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (sgitg == 0) {
+            const uint nsg = (nth + 31) / 32;
+            const uint sv = tiisg < nsg ? scan[tiisg] : 0u;
+            const uint sp = simd_prefix_exclusive_sum(sv);
+            if (tiisg < nsg) scan[tiisg] = sp;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (which == 0) r_gt = p + scan[sgitg]; else r_eq = p + scan[sgitg];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    const uint eq_base = args.top_k - need;
+    for (uint e = e0; e < e1; e++) {
+        const uint b = compact ? qwen4_idx_pre_block(tiles, e) : e;
+        if (b >= n) continue;
+        const uint key = compact ? keys[e] : as_type<uint>(max(row[e], 0.0f));
+        if (key > prefix) out[r_gt++] = (int32_t)b;
+        else if (key == prefix) { if (r_eq < need) out[eq_base + r_eq] = (int32_t)b; r_eq++; }
     }
 }
 
@@ -1561,11 +1745,22 @@ kernel void kernel_qwen4_attn_merge_wide(
     for (uint s = 0; s < args.n_splits; s++) mm = max(mm, base[s * stride]);
     float ll = 0.0f;
     float o = 0.0f;
-    for (uint s = 0; s < args.n_splits; s++) {
-        device const float *p = base + s * stride;
-        const float c = p[1] > 0.0f ? exp(p[0] - mm) : 0.0f;
-        ll += p[1] * c;
-        o += p[2u + tid] * c;
+    /* sixteen splits' values in flight per round; the chain below still
+     * visits the splits in order */
+    for (uint s0 = 0; s0 < args.n_splits; s0 += 16u) {
+        float pm[16], pl[16], po[16];
+        const uint n_round = min(16u, args.n_splits - s0);
+        for (uint i = 0; i < 16u; i++) {
+            device const float *p = base + (s0 + min(i, n_round - 1u)) * stride;
+            pm[i] = p[0];
+            pl[i] = p[1];
+            po[i] = p[2u + tid];
+        }
+        for (uint i = 0; i < n_round; i++) {
+            const float c = pl[i] > 0.0f ? exp(pm[i] - mm) : 0.0f;
+            ll += pl[i] * c;
+            o += po[i] * c;
+        }
     }
     const float inv = ll > 0.0f ? 1.0f / ll : 0.0f;
     const uint64_t at = ((uint64_t)tok * H + h) * D + tid;
