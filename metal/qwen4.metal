@@ -2096,8 +2096,17 @@ struct ds4_metal_args_qwen4_moe_mm {
     uint32_t n_expert;
     uint32_t tiles_per_launch;
     uint32_t tail_base; /* host binds the same value to function constant 905 */
-    uint32_t pad1;
+    uint32_t expert_major; /* grid x = tile * row_blocks + row_block, z = 1 */
 };
+
+/* Threadgroup -> (row block, first tile).  Expert-major order keeps one
+ * expert's tiles adjacent so its rows are reused from cache; the K loop and
+ * accumulation order of every tile are unchanged. */
+static inline uint2 qwen4_moe_mm_block(constant ds4_metal_args_qwen4_moe_mm & args, uint3 tgpig) {
+    if (!args.expert_major) return uint2(tgpig.x, tgpig.z);
+    const uint n_rb = (args.out_rows + 31u) / 32u;   /* QWEN4_MM_ROWS-sized blocks */
+    return uint2(tgpig.x % n_rb, tgpig.x / n_rb);
+}
 
 /* Zero retains runtime dispatch; a bound quantization removes the other
  * dequantizers without changing the tile arithmetic. */
@@ -2264,7 +2273,8 @@ kernel void kernel_qwen4_moe_mm_mid(
         ushort tid [[thread_index_in_threadgroup]],
         ushort sgitg [[simdgroup_index_in_threadgroup]]) {
     constexpr uint TT = QWEN4_MM_TOKS * NT;
-    const uint rb = tgpig.x, e = tgpig.y;
+    const uint2 block = qwen4_moe_mm_block(args, tgpig);
+    const uint rb = block.x, e = tgpig.y;
     if (e >= args.n_expert) return;
     const uint count = (uint)counts[e];
     uint work_count = count, work_start = 0;
@@ -2288,7 +2298,7 @@ kernel void kernel_qwen4_moe_mm_mid(
     device const int32_t *list = lists + (uint64_t)e * args.list_cap;
     const uint row0 = rb * QWEN4_MM_ROWS;
     const uint nk = args.in_dim / QWEN4_MM_KS;
-    for (uint tile = tgpig.z; tile * TT < work_count; tile += args.tiles_per_launch) {
+    for (uint tile = block.y; tile * TT < work_count; tile += args.tiles_per_launch) {
         const uint t0 = work_start + tile * TT;
         const uint n_tile = min((uint)TT, work_count - tile * TT);
         simdgroup_float8x8 Cg[NT], Cu[NT];
@@ -2382,7 +2392,8 @@ kernel void kernel_qwen4_moe_mm_down(
         ushort tid [[thread_index_in_threadgroup]],
         ushort sgitg [[simdgroup_index_in_threadgroup]]) {
     constexpr uint TT = QWEN4_MM_TOKS * NT;
-    const uint rb = tgpig.x, e = tgpig.y;
+    const uint2 block = qwen4_moe_mm_block(args, tgpig);
+    const uint rb = block.x, e = tgpig.y;
     if (e >= args.n_expert) return;
     const uint count = (uint)counts[e];
     uint work_count = count, work_start = 0;
@@ -2404,7 +2415,7 @@ kernel void kernel_qwen4_moe_mm_down(
     device const int32_t *list = lists + (uint64_t)e * args.list_cap;
     const uint row0 = rb * QWEN4_MM_ROWS;
     const uint nk = args.in_dim / QWEN4_MM_KS;
-    for (uint tile = tgpig.z; tile * TT < work_count; tile += args.tiles_per_launch) {
+    for (uint tile = block.y; tile * TT < work_count; tile += args.tiles_per_launch) {
         const uint t0 = work_start + tile * TT;
         const uint n_tile = min((uint)TT, work_count - tile * TT);
         simdgroup_float8x8 C[NT];
