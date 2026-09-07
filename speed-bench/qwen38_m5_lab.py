@@ -7,8 +7,9 @@ and every accepted change must keep full-vocabulary FP32 logits byte-identical.
 
 Subcommands:
   parity     teacher-forced full-logit parity (1..128 prompt tokens, 32 rows each)
-  sweep      ds4-bench prefill+greedy-decode sweep for both builds, both orders,
-             with per-frontier logit dumps compared byte for byte
+  sweep      per-frontier ds4-bench prefill+greedy-decode runs, four fresh
+             processes per frontier in ABBA/BAAB order, frontier logits
+             compared byte for byte across all four
   decode     short-prompt plain decode and MTP decode (qwen38_mtp_compare.py)
   mtp-long   MTP decode on long raw prompts (32K/128K), both builds interleaved
   prefill-ab single-engine env A/B (metal_prefill_variant_bench)
@@ -154,59 +155,73 @@ class Lab:
         return ok
 
     # ----------------------------------------------------------------- sweep
-    def sweep_one(self, build, tag, ctx_max):
+    def sweep_one(self, build, tag, ctx):
+        """One frontier in one process: prefill ctx tokens, then greedy decode."""
         d = self.out / "sweep" / f"{tag}-{build}"
         (d / "logits").mkdir(parents=True, exist_ok=True)
         gen = self.args.gen_tokens
         cmd = [str(self.builds[build] / "ds4-bench"), "-m", str(self.model), "--ple", str(self.ple), "--metal",
-               "--prompt-file", str(self.prompt), "--ctx-start", str(self.args.ctx_start),
-               "--ctx-max", str(ctx_max), "--step-mul", "2", "--gen-tokens", str(gen),
-               "--csv", str(d / "speed.csv"), "--dump-frontier-logits-dir", str(d / "logits")]
+               "--prompt-file", str(self.prompt), "--ctx-start", str(ctx), "--ctx-max", str(ctx),
+               "--gen-tokens", str(gen), "--csv", str(d / "speed.csv"),
+               "--dump-frontier-logits-dir", str(d / "logits")]
+        if self.args.prefill_chunk:
+            cmd += ["--prefill-chunk", str(self.args.prefill_chunk)]
         env = self.env_for(build)
         env["DS4_BENCH_FORCE_SNAPSHOT"] = "1"
         wall = self.run(build, cmd, d / "bench", env=env)
-        rows = []
-        for line in (d / "speed.csv").read_text().splitlines()[1:]:
-            f = line.split(",")
-            rows.append({"ctx": int(f[0]), "prefill_tokens": int(f[1]), "prefill_tps": float(f[2]),
-                         "gen_tps": float(f[4]), "gen_first_ms": float(f[5]), "gen_steady_tps": float(f[7])})
+        f = (d / "speed.csv").read_text().splitlines()[1].split(",")
+        row = {"ctx": int(f[0]), "prefill_tokens": int(f[1]), "prefill_tps": float(f[2]),
+               "gen_tps": float(f[4]), "gen_first_ms": float(f[5]), "gen_steady_tps": float(f[7])}
         logits = {p.name: sha256(p) for p in sorted((d / "logits").glob("frontier_*.logits.json"))}
-        self.say(f"sweep {tag} {build}: {wall:.0f}s " +
-                 " ".join(f"{r['ctx']}:{r['prefill_tps']:.0f}/{r['gen_tps']:.2f}" for r in rows))
-        return {"rows": rows, "logits_sha256": logits, "wall_s": wall}
+        self.say(f"sweep {tag} {build}: {wall:.0f}s prefill {row['prefill_tps']:.1f} decode {row['gen_tps']:.2f}")
+        return {"row": row, "logits_sha256": logits, "wall_s": wall}
+
+    def sweep_ctxs(self):
+        if self.args.sweep_ctx:
+            return [int(c) for c in self.args.sweep_ctx.split(",")]
+        ctxs, c = [], self.args.ctx_start
+        while c < self.args.ctx_max:
+            ctxs.append(c)
+            c *= 2
+        return ctxs + [self.args.ctx_max]
 
     def sweep(self):
-        ctx_max = self.args.ctx_max
-        runs = {}
-        order = [["baseline", "candidate"], ["candidate", "baseline"]][: self.args.sweep_orders]
-        for i, pair in enumerate(order):
-            for build in pair:
-                runs[f"r{i}-{build}"] = self.sweep_one(build, f"r{i}", ctx_max)
-        # exactness: every frontier dump must match across all runs
-        names = sorted({n for r in runs.values() for n in r["logits_sha256"]})
-        exact = all(len({r["logits_sha256"].get(n) for r in runs.values()}) == 1 for n in names)
-        # per-context means
-        ctxs = sorted({row["ctx"] for r in runs.values() for row in r["rows"]})
-        table = []
-        for ctx in ctxs:
-            entry = {"ctx": ctx}
-            for build in self.builds:
-                vals = [row for k, r in runs.items() if k.endswith(build) for row in r["rows"] if row["ctx"] == ctx]
-                entry[build] = {"prefill_tps": statistics.mean(v["prefill_tps"] for v in vals),
-                                "gen_tps": statistics.mean(v["gen_tps"] for v in vals),
-                                "gen_steady_tps": statistics.mean(v["gen_steady_tps"] for v in vals)}
+        """Per frontier, four fresh processes in ABBA (or BAAB) order.
+
+        Sustained GPU load drifts the machine by 10-20% over a few minutes,
+        so builds are interleaved within each frontier rather than run as two
+        long sweeps; every frontier's logits must match across all four runs.
+        """
+        runs, table, exact = {}, [], True
+        for i, ctx in enumerate(self.sweep_ctxs()):
+            pattern = ["baseline", "candidate", "candidate", "baseline"]
+            if i % 2:
+                pattern.reverse()
+            per = {b: [] for b in self.builds}
+            hashes = set()
+            for slot, build in enumerate(pattern):
+                r = self.sweep_one(build, f"c{ctx}-s{slot}", ctx)
+                runs[f"c{ctx}-s{slot}-{build}"] = r
+                per[build].append(r["row"])
+                hashes.update(r["logits_sha256"].values())
+            entry = {"ctx": ctx, "exact": len(hashes) == 1}
+            exact &= entry["exact"]
+            for b, rows in per.items():
+                entry[b] = {"prefill_tps": statistics.mean(v["prefill_tps"] for v in rows),
+                            "gen_tps": statistics.mean(v["gen_tps"] for v in rows),
+                            "gen_steady_tps": statistics.mean(v["gen_steady_tps"] for v in rows)}
             entry["prefill_pct"] = (entry["candidate"]["prefill_tps"] / entry["baseline"]["prefill_tps"] - 1) * 100
             entry["decode_pct"] = (entry["candidate"]["gen_tps"] / entry["baseline"]["gen_tps"] - 1) * 100
             table.append(entry)
-        rec = {"ctx_max": ctx_max, "gen_tokens": self.args.gen_tokens, "runs": runs, "table": table,
-               "frontier_logits_exact": exact, "frontiers_compared": len(names)}
-        self.report["steps"]["sweep"] = rec
-        self.save()
-        for e in table:
-            self.say(f"sweep ctx={e['ctx']}: prefill {e['baseline']['prefill_tps']:.1f} -> "
-                     f"{e['candidate']['prefill_tps']:.1f} ({e['prefill_pct']:+.2f}%), decode "
-                     f"{e['baseline']['gen_tps']:.2f} -> {e['candidate']['gen_tps']:.2f} ({e['decode_pct']:+.2f}%)")
-        self.say(f"sweep frontier logits: {'EXACT' if exact else 'MISMATCH'} over {len(names)} frontiers")
+            self.say(f"sweep ctx={ctx}: prefill {entry['baseline']['prefill_tps']:.1f} -> "
+                     f"{entry['candidate']['prefill_tps']:.1f} ({entry['prefill_pct']:+.2f}%), decode "
+                     f"{entry['baseline']['gen_tps']:.2f} -> {entry['candidate']['gen_tps']:.2f} "
+                     f"({entry['decode_pct']:+.2f}%), logits {'EXACT' if entry['exact'] else 'MISMATCH'}")
+            rec = {"gen_tokens": self.args.gen_tokens, "runs": runs, "table": table,
+                   "frontier_logits_exact": exact, "frontiers_compared": len(table)}
+            self.report["steps"]["sweep"] = rec
+            self.save()
+        self.say(f"sweep frontier logits: {'EXACT' if exact else 'MISMATCH'} over {len(table)} frontiers")
         return exact
 
     # ---------------------------------------------------------------- decode
@@ -379,7 +394,8 @@ def main():
     ap.add_argument("--ctx-start", type=int, default=4096)
     ap.add_argument("--ctx-max", type=int, default=131072)
     ap.add_argument("--gen-tokens", type=int, default=128)
-    ap.add_argument("--sweep-orders", type=int, default=2, help="1: baseline then candidate; 2: both orders")
+    ap.add_argument("--sweep-ctx", default="", help="comma-separated frontiers (default: doubling ctx-start..ctx-max)")
+    ap.add_argument("--prefill-chunk", type=int, default=0)
     ap.add_argument("--decode-repeats", type=int, default=3)
     ap.add_argument("--long-chars", type=int, action="append", default=[], help="raw prompt slice sizes for mtp-long")
     ap.add_argument("--long-ctx", type=int, default=140000)
