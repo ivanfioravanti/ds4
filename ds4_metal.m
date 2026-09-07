@@ -48616,8 +48616,13 @@ int ds4_gpu_qwen4_gdn_front_tensor(
     } else {
         b[10] = b[1];
     }
+    /* One threadgroup per key head: simdgroups 0/1 normalize, the rest take
+     * the alpha/beta rows, and every channel's conv stays on one thread, so
+     * the thread count only spreads the conv wider.  M5 measured 1024. */
+    const uint64_t nth = ds4_gpu_env_u64("DS4_QWEN4_GDN_FRONT_THREADS",
+                                         ds4_gpu_device_is_m5_apple_silicon() ? 1024u : 256u, 96u, 1024u);
     return qwen4_dispatch(QWEN4_K_GDN_FRONT, &args, sizeof(args), b, 11,
-                          MTLSizeMake(n_k_head, 1, 1), MTLSizeMake(256, 1, 1), 0);
+                          MTLSizeMake(n_k_head, 1, 1), MTLSizeMake((NSUInteger)(nth / 32u * 32u), 1, 1), 0);
 }
 
 int ds4_gpu_qwen4_multi_gemv_tensor(
