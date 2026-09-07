@@ -30,6 +30,7 @@ typedef struct {
     const char *control_env[16];  /* control-only NAME=VALUE settings */
     int n_extra;
     int n_control;
+    bool interleave;
     int prefill_chunk;
     int prefix_tokens;
     int initial_tokens;
@@ -61,7 +62,10 @@ static void usage(FILE *fp, const char *argv0) {
             "  --initial-tokens N     untimed live prefix before appending to that length\n"
             "  --warmup-tokens N      untimed tokens per variant (default: 32; min: 32)\n"
             "  --ctx N                session allocation (default: max lengths + 1)\n"
-            "  --repeats N            alternating ABBA/BAAB pairs (default: 2)\n",
+            "  --repeats N            alternating ABBA/BAAB pairs (default: 2)\n"
+            "  --interleave           one session per repeat, prefilled chunk by chunk with the\n"
+            "                         variant alternating per chunk (and per repeat), so both\n"
+            "                         variants share the machine state and every position\n",
             argv0);
 }
 
@@ -130,6 +134,8 @@ static bench_config parse_options(int argc, char **argv) {
                 exit(2);
             }
             list[(*n)++] = spec;
+        } else if (!strcmp(arg, "--interleave")) {
+            cfg.interleave = true;
         } else if (!strcmp(arg, "--prefix-tokens")) {
             cfg.prefix_tokens =
                 parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
@@ -422,6 +428,77 @@ int main(int argc, char **argv) {
     ds4_tokens initial = { .v = tokens.v, .len = cfg.initial_tokens, .cap = cfg.initial_tokens };
     const int timed_tokens = cfg.prefix_tokens - cfg.initial_tokens;
     size_t run = 0;
+    if (cfg.interleave) {
+        /* Sustained load drifts the GPU by several percent within a minute,
+         * and single fresh-session runs carry positional outliers, so
+         * measure both variants inside the same session: every chunk after
+         * --initial-tokens is timed under the variant of its parity, and the
+         * next repeat swaps the parity.  Final logits must match across
+         * repeats, which pins every chunk of both variants. */
+        const int chunk = cfg.prefill_chunk;
+        if (timed_tokens % chunk != 0 || cfg.initial_tokens % chunk != 0) {
+            fprintf(stderr, "%s: --interleave needs --initial-tokens and --prefix-tokens as multiples of --prefill-chunk\n", BENCH_NAME);
+            goto done;
+        }
+        /* The first session that reaches a context length pays first-use
+         * costs on its buffers for every chunk after the first (measured at
+         * -25% on an M5 Max), so pass 0 walks the whole prefix untimed. */
+        for (int repeat = -1; repeat < cfg.repeats; repeat++) {
+            const bool timed = repeat >= 0;
+            ds4_session *session = NULL;
+            if (select_variant(&cfg, 0) != 0 || ds4_session_create(&session, engine, cfg.ctx) != 0) {
+                fprintf(stderr, "%s: failed to create interleaved session %d\n", BENCH_NAME, repeat + 1);
+                goto done;
+            }
+            err[0] = '\0';
+            if (initial.len && ds4_session_sync(session, &initial, err, sizeof(err)) != 0) {
+                fprintf(stderr, "%s: initial prefix failed: %s\n", BENCH_NAME, err);
+                ds4_session_free(session);
+                goto done;
+            }
+            for (int c = 0; c < timed_tokens / chunk; c++) {
+                const int variant = (c + repeat) & 1;
+                ds4_tokens part = { .v = tokens.v, .len = cfg.initial_tokens + (c + 1) * chunk,
+                                    .cap = cfg.initial_tokens + (c + 1) * chunk };
+                if (select_variant(&cfg, variant) != 0) { ds4_session_free(session); goto done; }
+                const double t0 = now_sec();
+                const int sync_rc = ds4_session_sync(session, &part, err, sizeof(err));
+                const double seconds = now_sec() - t0;
+                if (sync_rc != 0 || ds4_session_pos(session) != part.len) {
+                    fprintf(stderr, "%s: interleaved chunk %d failed: %s\n", BENCH_NAME, c + 1, err[0] ? err : "position");
+                    ds4_session_free(session);
+                    goto done;
+                }
+                if (timed) {
+                    results[variant].seconds += seconds;
+                    results[variant].runs++;
+                    results[variant].tokens += (size_t)chunk;
+                }
+                printf("run=%zu repeat=%d pattern=%s slot=%d variant=%s tokens=%d seconds=%.6f tokens_per_second=%.4f exact=%s\n",
+                       run + 1, repeat + 1, !timed ? "warm" : repeat & 1 ? "BABA" : "ABAB", c + 1,
+                       variant == 0 ? "control" : "candidate", chunk, seconds,
+                       seconds > 0.0 ? (double)chunk / seconds : 0.0, timed ? "pending" : "untimed");
+                fflush(stdout);
+                if (timed) run++;
+            }
+            memset(observed, (repeat & 1) == 0 ? 0xa5 : 0x5a, logit_bytes);
+            if (ds4_session_copy_logits(session, observed, vocab) != vocab) {
+                fprintf(stderr, "%s: failed to copy logits after repeat %d\n", BENCH_NAME, repeat + 1);
+                ds4_session_free(session);
+                goto done;
+            }
+            if (!have_reference) {
+                memcpy(reference, observed, logit_bytes);
+                have_reference = true;
+            } else if (compare_logits(reference, observed, vocab, (size_t)repeat + 1) != 0) {
+                ds4_session_free(session);
+                goto done;
+            }
+            if (timed) exact_runs++;
+            printf("repeat=%d final logits exact=yes\n", repeat + 1);
+            ds4_session_free(session);
+        }
+    } else
     for (int repeat = 0; repeat < cfg.repeats; repeat++) {
         const int *order = orders[repeat & 1];
         const char *pattern = (repeat & 1) == 0 ? "ABBA" : "BAAB";
