@@ -1,0 +1,159 @@
+{
+  "baseline_commit": "66b0e3fc3bf0f548db1ec0c0dd19f4e43567a7f8",
+  "decision": "Reject all prototypes; restore production implementation.",
+  "hardware": "M3 Ultra, 512 GiB",
+  "runner": "import os,subprocess,pathlib,re,json,hashlib\np=pathlib.Path('/private/tmp/q2-mtp-fused')\ncmd=['./ds4','-m','/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf','--ple','/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf','--metal','-c','8192','-n','256','--nothink','--temp','0','--mtp','--mtp-timing','-p','Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.']\nrecords=[]\nfor rep in range(3):\n for nsg in ([0,1] if rep%2==0 else [1,0]):\n  env={k:v for k,v in os.environ.items() if not k.startswith('DS4_')}\n  if nsg: env['DS4_QWEN4_MTP_FUSED_HEAD']='1'\n  r=subprocess.run(cmd,env=env,capture_output=True,check=True)\n  (p/f'argmax-warm-{nsg}-{rep}.log').write_bytes(r.stderr)\n  (p/f'argmax-warm-{nsg}-{rep}.stdout').write_bytes(r.stdout)\n  rate=re.search(rb'generation: ([0-9.]+) t/s',r.stderr).group(1).decode()\n  rec={'nsg':nsg,'rep':rep,'tps':float(rate),'sha256':hashlib.sha256(r.stdout).hexdigest()}\n  records.append(rec); print(rec,flush=True)\n(p/'argmax-warm-sweep.json').write_text(json.dumps(records,indent=2))\n",
+  "variants": {
+    "rows2": {
+      "runs": [
+        {
+          "rep": 0,
+          "tps": 68.14,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": false,
+          "warmup": true
+        },
+        {
+          "rep": 0,
+          "tps": 66.95,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": true,
+          "warmup": true
+        },
+        {
+          "rep": 1,
+          "tps": 67.81,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": true,
+          "warmup": false
+        },
+        {
+          "rep": 1,
+          "tps": 68.35,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": false,
+          "warmup": false
+        },
+        {
+          "rep": 2,
+          "tps": 68.18,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": false,
+          "warmup": false
+        },
+        {
+          "rep": 2,
+          "tps": 67.84,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": true,
+          "warmup": false
+        }
+      ],
+      "baseline_tps": 68.265,
+      "candidate_tps": 67.825,
+      "change_percent": -0.644546986010397,
+      "prototype_patch": "--- a/ds4.c\n+++ b/ds4.c\n@@ -55085,7 +55085,7 @@\n         QWEN4_ALLOC(mtp_proj, 2u * (hc + 1u) * E);\n         QWEN4_ALLOC(mtp_R, 2u * hc_dim);\n         QWEN4_ALLOC(mtp_argmax, 1u);\n-        QWEN4_ALLOC(mtp_argmax_tmp, ((DS4_N_VOCAB + 4095u) / 4096u) * 2u);\n+        QWEN4_ALLOC(mtp_argmax_tmp, ((DS4_N_VOCAB + 1u) / 2u) * 2u);\n         QWEN4_ALLOC(snap_ple_hist, (uint64_t)(DS4_N_PLE_CONV - 1u) * DS4_N_PLE_NGRAM * hc_dim);\n     }\n #undef QWEN4_ALLOC\n@@ -55670,17 +55670,22 @@\n     if (ok) ok = qwen4_graph_hc_mix(g, m, l->hc_ffn_norm, l->hc_ffn_down, l->hc_ffn_up, l->hc_ffn_inject, T);\n     if (ok) ok = qwen4_graph_moe(g, m, l, T);\n     ds4_gpu_tensor *last = NULL;\n+    const char *argmax_env = getenv(\"DS4_QWEN4_MTP_GPU_ARGMAX\");\n+    const bool gpu_argmax = want_logits && draft_out && !logits_out &&\n+        (!argmax_env || strcmp(argmax_env, \"0\") != 0);\n+    const char *fused_env = getenv(\"DS4_QWEN4_MTP_FUSED_HEAD\");\n+    const bool fused = gpu_argmax && w->output->type == DS4_TENSOR_Q8_0 &&\n+        fused_env && strcmp(fused_env, \"0\") != 0;\n     if (ok && want_logits) {\n         last = ds4_gpu_tensor_view(g->mtp_R, (T - 1u) * hc * emb_bytes, hc * emb_bytes);\n         g->R = last;\n-        ok = last && qwen4_graph_hc_mix(g, m, l->nextn_hc_head_norm, l->nextn_hc_head_down, l->nextn_hc_head_up, NULL, 1) &&\n-             qwen4_gemv(g->logits, m, w->output, g->mixed, 1);\n+        ok = last && qwen4_graph_hc_mix(g, m, l->nextn_hc_head_norm, l->nextn_hc_head_down, l->nextn_hc_head_up, NULL, 1);\n+        if (ok && fused) ok = ds4_gpu_qwen4_head_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,\n+            g->logits, g->mixed, m->map, m->size, w->output->abs_offset, w->output->dim[0], DS4_N_VOCAB);\n+        else if (ok) ok = qwen4_gemv(g->logits, m, w->output, g->mixed, 1);\n     }\n     g->R = R_save;\n-    const char *argmax_env = getenv(\"DS4_QWEN4_MTP_GPU_ARGMAX\");\n-    const bool gpu_argmax = want_logits && draft_out && !logits_out &&\n-        (!argmax_env || strcmp(argmax_env, \"0\") != 0);\n-    if (ok && gpu_argmax) ok = ds4_gpu_qwen4_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,\n+    if (ok && gpu_argmax && !fused) ok = ds4_gpu_qwen4_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,\n                                                           g->logits, DS4_N_VOCAB) != 0;\n     if (!ds4_gpu_end_commands()) ok = false;\n     ds4_gpu_tensor_free(last);\n--- a/ds4_gpu.h\n+++ b/ds4_gpu.h\n@@ -3293,6 +3293,9 @@\n #define DS4_QWEN4_HC_CHUNKS 8\n /* CPU-compatible argmax: lowest index wins ties; scores <= -1e30 and\n  * NaNs cannot replace initial index zero. Scratch needs ceil(V/4096)*8 bytes. */\n+int ds4_gpu_qwen4_head_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n+        ds4_gpu_tensor *logits, const ds4_gpu_tensor *x, const void *map, uint64_t size,\n+        uint64_t offset, uint32_t in_dim, uint32_t n_vocab);\n int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n                                const ds4_gpu_tensor *logits, uint32_t n_vocab);\n int ds4_gpu_qwen4_hc_norm_tensor(\n--- a/ds4_metal.m\n+++ b/ds4_metal.m\n@@ -47318,6 +47318,7 @@\n     QWEN4_K_MOE_MID_Q4K_NR1,\n     QWEN4_K_MOE_DOWN,\n     QWEN4_K_MOE_REDUCE,\n+    QWEN4_K_HEAD_ARGMAX,\n     QWEN4_K_ARGMAX,\n     QWEN4_K_MTP_STAGE,\n     QWEN4_K_MTP_COMBINE,\n@@ -47382,6 +47383,7 @@\n     \"kernel_qwen4_moe_mid_q4k_nr1\",\n     \"kernel_qwen4_moe_down\",\n     \"kernel_qwen4_moe_reduce\",\n+    \"kernel_qwen4_head_argmax\",\n     \"kernel_qwen4_argmax\",\n     \"kernel_qwen4_mtp_stage\",\n     \"kernel_qwen4_mtp_combine\",\n@@ -48290,6 +48292,26 @@\n         if (nt > 2u && !qwen4_dispatch(QWEN4_K_MOE_MM_DOWN_NT2, &args, sizeof(args), b, 5, tail_grid, MTLSizeMake(128, 1, 1), 0)) return 0;\n     }\n     return 1;\n+}\n+\n+int ds4_gpu_qwen4_head_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n+        ds4_gpu_tensor *logits, const ds4_gpu_tensor *x, const void *map, uint64_t size,\n+        uint64_t offset, uint32_t in_dim, uint32_t n_vocab) {\n+    if (!in_dim || in_dim % 32u || !n_vocab || n_vocab > INT32_MAX) return 0;\n+    const uint32_t pairs = (n_vocab + 1u) / 2u;\n+    struct { uint32_t in_dim, n_vocab; } args = {in_dim, n_vocab};\n+    qwen4_bind b[4];\n+    if (!qwen4_bind_weight(&b[0], map, size, offset, (uint64_t)(in_dim / 32u) * 34u * n_vocab, \"head weights\") ||\n+        !qwen4_bind_tensor(&b[1], x, (uint64_t)in_dim * 4u, \"head input\") ||\n+        !qwen4_bind_tensor(&b[2], scratch, (uint64_t)pairs * 8u, \"head partials\") ||\n+        !qwen4_bind_tensor(&b[3], logits, (uint64_t)n_vocab * 4u, \"head logits\")) return 0;\n+    if (!qwen4_dispatch(QWEN4_K_HEAD_ARGMAX, &args, sizeof(args), b, 4,\n+                       MTLSizeMake(pairs, 1, 1), MTLSizeMake(256, 1, 1), 0)) return 0;\n+    qwen4_bind reduce[3] = {b[3], b[2]};\n+    if (!qwen4_bind_tensor(&reduce[2], out_idx, 4u, \"head index\")) return 0;\n+    struct { uint32_t n, finish; } finish = {pairs, 1u};\n+    return qwen4_dispatch(QWEN4_K_ARGMAX, &finish, sizeof(finish), reduce, 3,\n+                         MTLSizeMake(1, 1, 1), MTLSizeMake(256, 1, 1), 0);\n }\n \n int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n--- a/metal/qwen4.metal\n+++ b/metal/qwen4.metal\n@@ -2758,3 +2758,50 @@\n         }\n     }\n }\n+\n+/* Experimental Q8 output head with one argmax partial per two rows.\n+ * Keep the dense kernel's eight-SIMD-group K walk and reduction tree. */\n+struct qwen4_head_args { uint in_dim, n_vocab; };\n+kernel void kernel_qwen4_head_argmax(\n+        constant qwen4_head_args &args,\n+        device const block_q8_0 *weights,\n+        device const float *x,\n+        device uint2 *partials,\n+        device float *logits,\n+        uint group [[threadgroup_position_in_grid]],\n+        ushort lane [[thread_index_in_simdgroup]],\n+        ushort sg [[simdgroup_index_in_threadgroup]]) {\n+    const uint r0 = group * 2u;\n+    const uint nb = args.in_dim / 32u;\n+    float sums[2] = {0.f, 0.f};\n+    const short ix = lane / 4, il = lane % 4;\n+    for (uint ib = sg * 8u + ix; ib < nb; ib += 64u) {\n+        float yl[8];\n+        for (short i = 0; i < 8; ++i) yl[i] = x[ib * 32u + il * 8 + i];\n+        for (short row = 0; row < 2; ++row) {\n+            if (r0 + row >= args.n_vocab) continue;\n+            device const block_q8_0 &b = weights[(ulong)(r0 + row) * nb + ib];\n+            float sumq = 0.f;\n+            FOR_UNROLL (short i = 0; i < 8; ++i) sumq += b.qs[il * 8 + i] * yl[i];\n+            sums[row] += sumq * b.d;\n+        }\n+    }\n+    threadgroup float shared[64];\n+    for (short row = 0; row < 2; ++row) {\n+        if (!sg) shared[row * 32 + lane] = 0.f;\n+        sums[row] = simd_sum(sums[row]);\n+    }\n+    threadgroup_barrier(mem_flags::mem_threadgroup);\n+    for (short row = 0; row < 2; ++row) if (!lane) shared[row * 32 + sg] = sums[row];\n+    threadgroup_barrier(mem_flags::mem_threadgroup);\n+    float best = -1.e30f;\n+    uint index = 0;\n+    for (short row = 0; row < 2; ++row) {\n+        float v = simd_sum(shared[row * 32 + lane]);\n+        if (r0 + row >= args.n_vocab) continue;\n+        if (!sg && !lane) logits[r0 + row] = v;\n+        if ((as_type<uint>(v) & 0x7fffffffu) > 0x7f800000u) continue;\n+        if (v > best || (v == best && r0 + row < index)) { best = v; index = r0 + row; }\n+    }\n+    if (!sg && !lane) partials[group] = uint2(as_type<uint>(best), index);\n+}\n"
+    },
+    "rows16": {
+      "runs": [
+        {
+          "rep": 0,
+          "tps": 68.11,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": false,
+          "warmup": true
+        },
+        {
+          "rep": 0,
+          "tps": 66.56,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": true,
+          "warmup": true
+        },
+        {
+          "rep": 1,
+          "tps": 67.81,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": true,
+          "warmup": false
+        },
+        {
+          "rep": 1,
+          "tps": 68.17,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": false,
+          "warmup": false
+        },
+        {
+          "rep": 2,
+          "tps": 68.06,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": false,
+          "warmup": false
+        },
+        {
+          "rep": 2,
+          "tps": 67.71,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": true,
+          "warmup": false
+        }
+      ],
+      "baseline_tps": 68.11500000000001,
+      "candidate_tps": 67.75999999999999,
+      "change_percent": -0.5211774205388209,
+      "prototype_patch": "diff --git a/ds4.c b/ds4.c\nindex f1c829b..a5f926e 100644\n--- a/ds4.c\n+++ b/ds4.c\n@@ -55085,7 +55085,7 @@ static bool qwen4_graph_alloc(ds4_qwen4_gpu_graph *g, const ds4_weights *w, uint\n         QWEN4_ALLOC(mtp_proj, 2u * (hc + 1u) * E);\n         QWEN4_ALLOC(mtp_R, 2u * hc_dim);\n         QWEN4_ALLOC(mtp_argmax, 1u);\n-        QWEN4_ALLOC(mtp_argmax_tmp, ((DS4_N_VOCAB + 4095u) / 4096u) * 2u);\n+        QWEN4_ALLOC(mtp_argmax_tmp, ((DS4_N_VOCAB + 1u) / 2u) * 2u);\n         QWEN4_ALLOC(snap_ple_hist, (uint64_t)(DS4_N_PLE_CONV - 1u) * DS4_N_PLE_NGRAM * hc_dim);\n     }\n #undef QWEN4_ALLOC\n@@ -55670,17 +55670,22 @@ static bool qwen4_graph_mtp_steps(ds4_qwen4_gpu_graph *g, const ds4_model *m, co\n     if (ok) ok = qwen4_graph_hc_mix(g, m, l->hc_ffn_norm, l->hc_ffn_down, l->hc_ffn_up, l->hc_ffn_inject, T);\n     if (ok) ok = qwen4_graph_moe(g, m, l, T);\n     ds4_gpu_tensor *last = NULL;\n+    const char *argmax_env = getenv(\"DS4_QWEN4_MTP_GPU_ARGMAX\");\n+    const bool gpu_argmax = want_logits && draft_out && !logits_out &&\n+        (!argmax_env || strcmp(argmax_env, \"0\") != 0);\n+    const char *fused_env = getenv(\"DS4_QWEN4_MTP_FUSED_HEAD\");\n+    const bool fused = gpu_argmax && w->output->type == DS4_TENSOR_Q8_0 &&\n+        fused_env && strcmp(fused_env, \"0\") != 0;\n     if (ok && want_logits) {\n         last = ds4_gpu_tensor_view(g->mtp_R, (T - 1u) * hc * emb_bytes, hc * emb_bytes);\n         g->R = last;\n-        ok = last && qwen4_graph_hc_mix(g, m, l->nextn_hc_head_norm, l->nextn_hc_head_down, l->nextn_hc_head_up, NULL, 1) &&\n-             qwen4_gemv(g->logits, m, w->output, g->mixed, 1);\n+        ok = last && qwen4_graph_hc_mix(g, m, l->nextn_hc_head_norm, l->nextn_hc_head_down, l->nextn_hc_head_up, NULL, 1);\n+        if (ok && fused) ok = ds4_gpu_qwen4_head_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,\n+            g->logits, g->mixed, m->map, m->size, w->output->abs_offset, w->output->dim[0], DS4_N_VOCAB);\n+        else if (ok) ok = qwen4_gemv(g->logits, m, w->output, g->mixed, 1);\n     }\n     g->R = R_save;\n-    const char *argmax_env = getenv(\"DS4_QWEN4_MTP_GPU_ARGMAX\");\n-    const bool gpu_argmax = want_logits && draft_out && !logits_out &&\n-        (!argmax_env || strcmp(argmax_env, \"0\") != 0);\n-    if (ok && gpu_argmax) ok = ds4_gpu_qwen4_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,\n+    if (ok && gpu_argmax && !fused) ok = ds4_gpu_qwen4_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,\n                                                           g->logits, DS4_N_VOCAB) != 0;\n     if (!ds4_gpu_end_commands()) ok = false;\n     ds4_gpu_tensor_free(last);\ndiff --git a/ds4_gpu.h b/ds4_gpu.h\nindex 6cc567c..ed8f0fc 100644\n--- a/ds4_gpu.h\n+++ b/ds4_gpu.h\n@@ -3293,6 +3293,9 @@ void ds4_gpu_decode_graphs_invalidate(void);\n #define DS4_QWEN4_HC_CHUNKS 8\n /* CPU-compatible argmax: lowest index wins ties; scores <= -1e30 and\n  * NaNs cannot replace initial index zero. Scratch needs ceil(V/4096)*8 bytes. */\n+int ds4_gpu_qwen4_head_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n+        ds4_gpu_tensor *logits, const ds4_gpu_tensor *x, const void *map, uint64_t size,\n+        uint64_t offset, uint32_t in_dim, uint32_t n_vocab);\n int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n                                const ds4_gpu_tensor *logits, uint32_t n_vocab);\n int ds4_gpu_qwen4_hc_norm_tensor(\ndiff --git a/ds4_metal.m b/ds4_metal.m\nindex caf1337..bae58e1 100644\n--- a/ds4_metal.m\n+++ b/ds4_metal.m\n@@ -47318,6 +47318,7 @@ static bool qwen4_bind_weight(qwen4_bind *b, const void *map, uint64_t size,\n     QWEN4_K_MOE_MID_Q4K_NR1,\n     QWEN4_K_MOE_DOWN,\n     QWEN4_K_MOE_REDUCE,\n+    QWEN4_K_HEAD_ARGMAX,\n     QWEN4_K_ARGMAX,\n     QWEN4_K_MTP_STAGE,\n     QWEN4_K_MTP_COMBINE,\n@@ -47382,6 +47383,7 @@ static bool qwen4_bind_weight(qwen4_bind *b, const void *map, uint64_t size,\n     \"kernel_qwen4_moe_mid_q4k_nr1\",\n     \"kernel_qwen4_moe_down\",\n     \"kernel_qwen4_moe_reduce\",\n+    \"kernel_qwen4_head_argmax\",\n     \"kernel_qwen4_argmax\",\n     \"kernel_qwen4_mtp_stage\",\n     \"kernel_qwen4_mtp_combine\",\n@@ -48292,6 +48294,26 @@ int ds4_gpu_qwen4_moe_mm_down_tensor(\n     return 1;\n }\n \n+int ds4_gpu_qwen4_head_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n+        ds4_gpu_tensor *logits, const ds4_gpu_tensor *x, const void *map, uint64_t size,\n+        uint64_t offset, uint32_t in_dim, uint32_t n_vocab) {\n+    if (!in_dim || in_dim % 32u || !n_vocab || n_vocab > INT32_MAX) return 0;\n+    const uint32_t pairs = (n_vocab + 15u) / 16u;\n+    struct { uint32_t in_dim, n_vocab; } args = {in_dim, n_vocab};\n+    qwen4_bind b[4];\n+    if (!qwen4_bind_weight(&b[0], map, size, offset, (uint64_t)(in_dim / 32u) * 34u * n_vocab, \"head weights\") ||\n+        !qwen4_bind_tensor(&b[1], x, (uint64_t)in_dim * 4u, \"head input\") ||\n+        !qwen4_bind_tensor(&b[2], scratch, (uint64_t)pairs * 8u, \"head partials\") ||\n+        !qwen4_bind_tensor(&b[3], logits, (uint64_t)n_vocab * 4u, \"head logits\")) return 0;\n+    if (!qwen4_dispatch(QWEN4_K_HEAD_ARGMAX, &args, sizeof(args), b, 4,\n+                       MTLSizeMake(pairs, 1, 1), MTLSizeMake(256, 1, 1), 0)) return 0;\n+    qwen4_bind reduce[3] = {b[3], b[2]};\n+    if (!qwen4_bind_tensor(&reduce[2], out_idx, 4u, \"head index\")) return 0;\n+    struct { uint32_t n, finish; } finish = {pairs, 1u};\n+    return qwen4_dispatch(QWEN4_K_ARGMAX, &finish, sizeof(finish), reduce, 3,\n+                         MTLSizeMake(1, 1, 1), MTLSizeMake(256, 1, 1), 0);\n+}\n+\n int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n                                const ds4_gpu_tensor *logits, uint32_t n_vocab) {\n     if (!n_vocab || n_vocab > INT32_MAX) return 0;\ndiff --git a/metal/qwen4.metal b/metal/qwen4.metal\nindex e686170..a1e436c 100644\n--- a/metal/qwen4.metal\n+++ b/metal/qwen4.metal\n@@ -2758,3 +2758,50 @@ kernel void kernel_qwen4_argmax(\n         }\n     }\n }\n+\n+/* Experimental Q8 output head with one argmax partial per two rows.\n+ * Keep the dense kernel's eight-SIMD-group K walk and reduction tree. */\n+struct qwen4_head_args { uint in_dim, n_vocab; };\n+kernel void kernel_qwen4_head_argmax(\n+        constant qwen4_head_args &args,\n+        device const block_q8_0 *weights,\n+        device const float *x,\n+        device uint2 *partials,\n+        device float *logits,\n+        uint group [[threadgroup_position_in_grid]],\n+        ushort lane [[thread_index_in_simdgroup]],\n+        ushort sg [[simdgroup_index_in_threadgroup]]) {\n+    const uint r0 = group * 16u;\n+    const uint nb = args.in_dim / 32u;\n+    float sums[16] = {0.f};\n+    const short ix = lane / 4, il = lane % 4;\n+    for (uint ib = sg * 8u + ix; ib < nb; ib += 64u) {\n+        float yl[8];\n+        for (short i = 0; i < 8; ++i) yl[i] = x[ib * 32u + il * 8 + i];\n+        for (short row = 0; row < 16; ++row) {\n+            if (r0 + row >= args.n_vocab) continue;\n+            device const block_q8_0 &b = weights[(ulong)(r0 + row) * nb + ib];\n+            float sumq = 0.f;\n+            FOR_UNROLL (short i = 0; i < 8; ++i) sumq += b.qs[il * 8 + i] * yl[i];\n+            sums[row] += sumq * b.d;\n+        }\n+    }\n+    threadgroup float shared[512];\n+    for (short row = 0; row < 16; ++row) {\n+        if (!sg) shared[row * 32 + lane] = 0.f;\n+        sums[row] = simd_sum(sums[row]);\n+    }\n+    threadgroup_barrier(mem_flags::mem_threadgroup);\n+    for (short row = 0; row < 16; ++row) if (!lane) shared[row * 32 + sg] = sums[row];\n+    threadgroup_barrier(mem_flags::mem_threadgroup);\n+    float best = -1.e30f;\n+    uint index = 0;\n+    for (short row = 0; row < 16; ++row) {\n+        float v = simd_sum(shared[row * 32 + lane]);\n+        if (r0 + row >= args.n_vocab) continue;\n+        if (!sg && !lane) logits[r0 + row] = v;\n+        if ((as_type<uint>(v) & 0x7fffffffu) > 0x7f800000u) continue;\n+        if (v > best || (v == best && r0 + row < index)) { best = v; index = r0 + row; }\n+    }\n+    if (!sg && !lane) partials[group] = uint2(as_type<uint>(best), index);\n+}\n"
+    },
+    "rows16-no-logits": {
+      "runs": [
+        {
+          "rep": 0,
+          "tps": 68.19,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": false,
+          "warmup": true
+        },
+        {
+          "rep": 0,
+          "tps": 66.67,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": true,
+          "warmup": true
+        },
+        {
+          "rep": 1,
+          "tps": 67.73,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": true,
+          "warmup": false
+        },
+        {
+          "rep": 1,
+          "tps": 68.25,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": false,
+          "warmup": false
+        },
+        {
+          "rep": 2,
+          "tps": 68.27,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": false,
+          "warmup": false
+        },
+        {
+          "rep": 2,
+          "tps": 67.73,
+          "sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63",
+          "fused": true,
+          "warmup": false
+        }
+      ],
+      "baseline_tps": 68.25999999999999,
+      "candidate_tps": 67.73,
+      "change_percent": -0.7764430120128729,
+      "prototype_patch": "diff --git a/ds4.c b/ds4.c\nindex f1c829b..a5f926e 100644\n--- a/ds4.c\n+++ b/ds4.c\n@@ -55085,7 +55085,7 @@ static bool qwen4_graph_alloc(ds4_qwen4_gpu_graph *g, const ds4_weights *w, uint\n         QWEN4_ALLOC(mtp_proj, 2u * (hc + 1u) * E);\n         QWEN4_ALLOC(mtp_R, 2u * hc_dim);\n         QWEN4_ALLOC(mtp_argmax, 1u);\n-        QWEN4_ALLOC(mtp_argmax_tmp, ((DS4_N_VOCAB + 4095u) / 4096u) * 2u);\n+        QWEN4_ALLOC(mtp_argmax_tmp, ((DS4_N_VOCAB + 1u) / 2u) * 2u);\n         QWEN4_ALLOC(snap_ple_hist, (uint64_t)(DS4_N_PLE_CONV - 1u) * DS4_N_PLE_NGRAM * hc_dim);\n     }\n #undef QWEN4_ALLOC\n@@ -55670,17 +55670,22 @@ static bool qwen4_graph_mtp_steps(ds4_qwen4_gpu_graph *g, const ds4_model *m, co\n     if (ok) ok = qwen4_graph_hc_mix(g, m, l->hc_ffn_norm, l->hc_ffn_down, l->hc_ffn_up, l->hc_ffn_inject, T);\n     if (ok) ok = qwen4_graph_moe(g, m, l, T);\n     ds4_gpu_tensor *last = NULL;\n+    const char *argmax_env = getenv(\"DS4_QWEN4_MTP_GPU_ARGMAX\");\n+    const bool gpu_argmax = want_logits && draft_out && !logits_out &&\n+        (!argmax_env || strcmp(argmax_env, \"0\") != 0);\n+    const char *fused_env = getenv(\"DS4_QWEN4_MTP_FUSED_HEAD\");\n+    const bool fused = gpu_argmax && w->output->type == DS4_TENSOR_Q8_0 &&\n+        fused_env && strcmp(fused_env, \"0\") != 0;\n     if (ok && want_logits) {\n         last = ds4_gpu_tensor_view(g->mtp_R, (T - 1u) * hc * emb_bytes, hc * emb_bytes);\n         g->R = last;\n-        ok = last && qwen4_graph_hc_mix(g, m, l->nextn_hc_head_norm, l->nextn_hc_head_down, l->nextn_hc_head_up, NULL, 1) &&\n-             qwen4_gemv(g->logits, m, w->output, g->mixed, 1);\n+        ok = last && qwen4_graph_hc_mix(g, m, l->nextn_hc_head_norm, l->nextn_hc_head_down, l->nextn_hc_head_up, NULL, 1);\n+        if (ok && fused) ok = ds4_gpu_qwen4_head_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,\n+            g->logits, g->mixed, m->map, m->size, w->output->abs_offset, w->output->dim[0], DS4_N_VOCAB);\n+        else if (ok) ok = qwen4_gemv(g->logits, m, w->output, g->mixed, 1);\n     }\n     g->R = R_save;\n-    const char *argmax_env = getenv(\"DS4_QWEN4_MTP_GPU_ARGMAX\");\n-    const bool gpu_argmax = want_logits && draft_out && !logits_out &&\n-        (!argmax_env || strcmp(argmax_env, \"0\") != 0);\n-    if (ok && gpu_argmax) ok = ds4_gpu_qwen4_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,\n+    if (ok && gpu_argmax && !fused) ok = ds4_gpu_qwen4_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,\n                                                           g->logits, DS4_N_VOCAB) != 0;\n     if (!ds4_gpu_end_commands()) ok = false;\n     ds4_gpu_tensor_free(last);\ndiff --git a/ds4_gpu.h b/ds4_gpu.h\nindex 6cc567c..ed8f0fc 100644\n--- a/ds4_gpu.h\n+++ b/ds4_gpu.h\n@@ -3293,6 +3293,9 @@ void ds4_gpu_decode_graphs_invalidate(void);\n #define DS4_QWEN4_HC_CHUNKS 8\n /* CPU-compatible argmax: lowest index wins ties; scores <= -1e30 and\n  * NaNs cannot replace initial index zero. Scratch needs ceil(V/4096)*8 bytes. */\n+int ds4_gpu_qwen4_head_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n+        ds4_gpu_tensor *logits, const ds4_gpu_tensor *x, const void *map, uint64_t size,\n+        uint64_t offset, uint32_t in_dim, uint32_t n_vocab);\n int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n                                const ds4_gpu_tensor *logits, uint32_t n_vocab);\n int ds4_gpu_qwen4_hc_norm_tensor(\ndiff --git a/ds4_metal.m b/ds4_metal.m\nindex caf1337..bae58e1 100644\n--- a/ds4_metal.m\n+++ b/ds4_metal.m\n@@ -47318,6 +47318,7 @@ static bool qwen4_bind_weight(qwen4_bind *b, const void *map, uint64_t size,\n     QWEN4_K_MOE_MID_Q4K_NR1,\n     QWEN4_K_MOE_DOWN,\n     QWEN4_K_MOE_REDUCE,\n+    QWEN4_K_HEAD_ARGMAX,\n     QWEN4_K_ARGMAX,\n     QWEN4_K_MTP_STAGE,\n     QWEN4_K_MTP_COMBINE,\n@@ -47382,6 +47383,7 @@ static bool qwen4_bind_weight(qwen4_bind *b, const void *map, uint64_t size,\n     \"kernel_qwen4_moe_mid_q4k_nr1\",\n     \"kernel_qwen4_moe_down\",\n     \"kernel_qwen4_moe_reduce\",\n+    \"kernel_qwen4_head_argmax\",\n     \"kernel_qwen4_argmax\",\n     \"kernel_qwen4_mtp_stage\",\n     \"kernel_qwen4_mtp_combine\",\n@@ -48292,6 +48294,26 @@ int ds4_gpu_qwen4_moe_mm_down_tensor(\n     return 1;\n }\n \n+int ds4_gpu_qwen4_head_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n+        ds4_gpu_tensor *logits, const ds4_gpu_tensor *x, const void *map, uint64_t size,\n+        uint64_t offset, uint32_t in_dim, uint32_t n_vocab) {\n+    if (!in_dim || in_dim % 32u || !n_vocab || n_vocab > INT32_MAX) return 0;\n+    const uint32_t pairs = (n_vocab + 15u) / 16u;\n+    struct { uint32_t in_dim, n_vocab; } args = {in_dim, n_vocab};\n+    qwen4_bind b[4];\n+    if (!qwen4_bind_weight(&b[0], map, size, offset, (uint64_t)(in_dim / 32u) * 34u * n_vocab, \"head weights\") ||\n+        !qwen4_bind_tensor(&b[1], x, (uint64_t)in_dim * 4u, \"head input\") ||\n+        !qwen4_bind_tensor(&b[2], scratch, (uint64_t)pairs * 8u, \"head partials\") ||\n+        !qwen4_bind_tensor(&b[3], logits, (uint64_t)n_vocab * 4u, \"head logits\")) return 0;\n+    if (!qwen4_dispatch(QWEN4_K_HEAD_ARGMAX, &args, sizeof(args), b, 4,\n+                       MTLSizeMake(pairs, 1, 1), MTLSizeMake(256, 1, 1), 0)) return 0;\n+    qwen4_bind reduce[3] = {b[3], b[2]};\n+    if (!qwen4_bind_tensor(&reduce[2], out_idx, 4u, \"head index\")) return 0;\n+    struct { uint32_t n, finish; } finish = {pairs, 1u};\n+    return qwen4_dispatch(QWEN4_K_ARGMAX, &finish, sizeof(finish), reduce, 3,\n+                         MTLSizeMake(1, 1, 1), MTLSizeMake(256, 1, 1), 0);\n+}\n+\n int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,\n                                const ds4_gpu_tensor *logits, uint32_t n_vocab) {\n     if (!n_vocab || n_vocab > INT32_MAX) return 0;\ndiff --git a/metal/qwen4.metal b/metal/qwen4.metal\nindex e686170..66bd17a 100644\n--- a/metal/qwen4.metal\n+++ b/metal/qwen4.metal\n@@ -2758,3 +2758,49 @@ kernel void kernel_qwen4_argmax(\n         }\n     }\n }\n+\n+/* Experimental Q8 output head with one argmax partial per two rows.\n+ * Keep the dense kernel's eight-SIMD-group K walk and reduction tree. */\n+struct qwen4_head_args { uint in_dim, n_vocab; };\n+kernel void kernel_qwen4_head_argmax(\n+        constant qwen4_head_args &args,\n+        device const block_q8_0 *weights,\n+        device const float *x,\n+        device uint2 *partials,\n+        device float *logits,\n+        uint group [[threadgroup_position_in_grid]],\n+        ushort lane [[thread_index_in_simdgroup]],\n+        ushort sg [[simdgroup_index_in_threadgroup]]) {\n+    const uint r0 = group * 16u;\n+    const uint nb = args.in_dim / 32u;\n+    float sums[16] = {0.f};\n+    const short ix = lane / 4, il = lane % 4;\n+    for (uint ib = sg * 8u + ix; ib < nb; ib += 64u) {\n+        float yl[8];\n+        for (short i = 0; i < 8; ++i) yl[i] = x[ib * 32u + il * 8 + i];\n+        for (short row = 0; row < 16; ++row) {\n+            if (r0 + row >= args.n_vocab) continue;\n+            device const block_q8_0 &b = weights[(ulong)(r0 + row) * nb + ib];\n+            float sumq = 0.f;\n+            FOR_UNROLL (short i = 0; i < 8; ++i) sumq += b.qs[il * 8 + i] * yl[i];\n+            sums[row] += sumq * b.d;\n+        }\n+    }\n+    threadgroup float shared[512];\n+    for (short row = 0; row < 16; ++row) {\n+        if (!sg) shared[row * 32 + lane] = 0.f;\n+        sums[row] = simd_sum(sums[row]);\n+    }\n+    threadgroup_barrier(mem_flags::mem_threadgroup);\n+    for (short row = 0; row < 16; ++row) if (!lane) shared[row * 32 + sg] = sums[row];\n+    threadgroup_barrier(mem_flags::mem_threadgroup);\n+    float best = -1.e30f;\n+    uint index = 0;\n+    for (short row = 0; row < 16; ++row) {\n+        float v = simd_sum(shared[row * 32 + lane]);\n+        if (r0 + row >= args.n_vocab) continue;\n+        if ((as_type<uint>(v) & 0x7fffffffu) > 0x7f800000u) continue;\n+        if (v > best || (v == best && r0 + row < index)) { best = v; index = r0 + row; }\n+    }\n+    if (!sg && !lane) partials[group] = uint2(as_type<uint>(best), index);\n+}\n"
+    }
+  },
+  "validation": "All 18 runs produced byte-identical text. Each had 148 verification cycles and 106 accepted drafts. No full-logit parity claim; prototypes rejected during performance screening."
+}
