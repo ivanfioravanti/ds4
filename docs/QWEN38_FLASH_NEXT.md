@@ -84,6 +84,14 @@ See [the padded Q2 speed measurements](../speed-bench/qwen38-q2-speed.md)
 and [the second optimization round](../speed-bench/qwen38-q2-round2.md)
 for end-to-end timings and numerical checks.
 
+Ordinary single-token decode on M3 Ultra also combines the residual update
+with the following F16 hyper-connection normalization, and dispatches the two Q8 GDN
+input projections together. Both retain the original FP32 reduction order.
+Set `DS4_QWEN4_DECODE_FUSIONS=0` to restore the separate operations;
+MTP sessions retain the separate operations, as do other devices by default. See the
+[ordinary-decode fusion measurements](../speed-bench/qwen38-q2-decode-fusions.md)
+for the measured gain, exact-logit checks, and rejected experiments.
+
 The older recipes below keep PLE inside the main GGUF, so their file sizes
 are not directly comparable with the external-PLE builds.
 

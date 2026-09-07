@@ -2758,3 +2758,82 @@ kernel void kernel_qwen4_argmax(
         }
     }
 }
+
+/* Read the old residual and injection buffer; write separate next buffers.
+ * Each normalization chunk writes only its own residual slice. */
+template <typename W>
+kernel void kernel_qwen4_hc_combine_norm(
+        constant ds4_metal_args_qwen4_hc_norm & args,
+        device const float *R,          /* [T][hc*E] */
+        device const float *gamma,      /* [hc*E] */
+        device const char  *w_inject,   /* [n_inject][hc*E] */
+        device float       *xn,         /* [T][hc*E] */
+        device float       *inj_part,   /* [T][hc*chunks][n_inject] */
+        device float *next_R, device const float *blk, device const float *old_inj,
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]]) {
+    const uint s = tgpig.x / QWEN4_HC_CHUNKS;
+    const uint chunk = tgpig.x % QWEN4_HC_CHUNKS;
+    const uint tok = tgpig.y;
+    if (s >= args.n_hc || tok >= args.n_tokens) return;
+    const uint E = args.n_embd, dim = E * args.n_hc;
+    const uint nth = ntg.x, nsg = nth / 32;
+    threadgroup float red[5][32];
+    device const float *r = R + ((uint64_t)tok * args.n_hc + s) * E;
+    device const float *g = gamma + s * E;
+    device float *o = xn + ((uint64_t)tok * args.n_hc + s) * E;
+    const W w(w_inject);
+    const float weight = qwen4_hc_inject_weight(old_inj, args.n_hc, s);
+    float ss = 0.0f;
+    for (uint i = tid; i < E; i += nth) { float v = r[i] + weight * blk[i]; ss += v * v; }
+    ss = simd_sum(ss);
+    if (tiisg == 0) red[0][sgitg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float tot = 0.0f;
+    for (uint q = 0; q < nsg; q++) tot += red[0][q];
+    const float inv = rsqrt(tot / (float)E + args.eps);
+    const uint per = (E + QWEN4_HC_CHUNKS - 1) / QWEN4_HC_CHUNKS;
+    const uint i0 = chunk * per, i1 = min(E, i0 + per);
+    float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    for (uint i = i0 + tid; i < i1; i += nth) {
+        const float combined = r[i] + weight * blk[i];
+        next_R[s * E + i] = combined;
+        const float v = combined * inv * g[i];
+        o[i] = v;
+        for (uint j = 0; j < 4; j++) {
+            if (j < args.n_inject) acc[j] += w.at((uint64_t)j * dim + s * E + i) * v;
+        }
+    }
+    for (uint j = 0; j < 4; j++) {
+        if (j >= args.n_inject) break;
+        const float a = simd_sum(acc[j]);
+        if (tiisg == 0) red[1 + j][sgitg] = a;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < args.n_inject) {
+        float a = 0.0f;
+        for (uint q = 0; q < nsg; q++) a += red[1 + tid][q];
+        inj_part[((uint64_t)tok * args.n_hc * QWEN4_HC_CHUNKS + s * QWEN4_HC_CHUNKS + chunk) * args.n_inject + tid] = a;
+    }
+}
+
+#define QWEN4_HC_COMBINE_NORM_INSTANCE(SUFFIX, W) \
+template [[host_name("kernel_qwen4_hc_combine_norm_" #SUFFIX)]] \
+kernel void kernel_qwen4_hc_combine_norm<W>(constant ds4_metal_args_qwen4_hc_norm &, device const float *, \
+        device const float *, device const char *, device float *, device float *, device float *, device const float *, device const float *, uint3, ushort, ushort3, ushort, ushort);
+QWEN4_HC_COMBINE_NORM_INSTANCE(f16, qwen4_w_f16)
+
+/* Disjoint output grids retain the standalone Q8 reduction trees. */
+kernel void kernel_qwen4_q8_concat(
+    constant ds4_metal_args_mul_mv &a, constant ds4_metal_args_mul_mv &b,
+    device const char *wa, device const char *wb, device const char *x,
+    device char *oa, device char *ob, threadgroup char *shared [[threadgroup(0)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    ushort lane [[thread_index_in_simdgroup]], ushort sg [[simdgroup_index_in_threadgroup]]) {
+    const uint first = (a.ne01 + 1) / 2;
+    if (group.x < first) kernel_mul_mv_q8_0_f32_impl<2, constant ds4_metal_args_mul_mv &>(a, wa, x, oa, shared, group, lane, sg);
+    else { group.x -= first; kernel_mul_mv_q8_0_f32_impl<2, constant ds4_metal_args_mul_mv &>(b, wb, x, ob, shared, group, lane, sg); }
+}

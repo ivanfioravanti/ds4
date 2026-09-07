@@ -1421,6 +1421,72 @@ static void check_exact_f32(const char *what, const float *got, const float *ref
     }
 }
 
+static void test_decode_fusions(arena_t *a) {
+    const uint32_t hc = 4u, guard = 17u;
+    /* Check the whole residual -> normalization -> injection boundary,
+     * including writes at the end of each buffer and rejected aliasing. */
+    const uint32_t widths[] = {64u, 2560u};
+    for (uint32_t wi = 0; wi < 2u; ++wi) {
+        const uint32_t e = widths[wi], dim = hc * e, ni = hc * DS4_QWEN4_HC_CHUNKS * hc;
+        double *shadow = NULL;
+        const uint64_t gamma = arena_f32(a, dim, &shadow, .8f, 1.2f); free(shadow);
+        const uint64_t inject = arena_f16(a, (uint64_t)hc * dim, &shadow, .1f); free(shadow);
+        float *r = rand_vec(dim, 1.f), *blk = rand_vec(e, 1.f), *inj = rand_vec(ni, .1f);
+        ds4_gpu_tensor *old = upload(r, dim), *block = upload(blk, e), *oldinj = upload(inj, ni);
+        ds4_gpu_tensor *seq = upload(NULL, dim + guard), *next = upload(NULL, dim + guard);
+        ds4_gpu_tensor *xs = upload(NULL, dim + guard), *xf = upload(NULL, dim + guard);
+        ds4_gpu_tensor *is = upload(NULL, ni + guard), *ifused = upload(NULL, ni + guard);
+        require_ok(ds4_gpu_tensor_fill_f32(seq, 17.25f, dim + guard) && ds4_gpu_tensor_write(seq, 0, r, dim * 4u), "combine input");
+        ds4_gpu_tensor *buffers[] = {next, xs, xf, is, ifused};
+        for (uint32_t i = 0; i < 5; ++i) require_ok(ds4_gpu_tensor_fill_f32(buffers[i], 17.25f, (i < 3 ? dim : ni) + guard), "fusion guard fill");
+        require_ok(ds4_gpu_begin_commands() && ds4_gpu_qwen4_hc_combine_tensor(seq, block, oldinj, 1, e, hc) &&
+            ds4_gpu_qwen4_hc_norm_tensor(xs, is, seq, a->base, a->size, gamma, inject, 1, 1, e, hc, hc, 1.e-6f) &&
+            ds4_gpu_qwen4_hc_combine_norm_tensor(next, block, oldinj, xf, ifused, old, a->base, a->size,
+                gamma, inject, 1, 1, e, hc, hc, 1.e-6f) && ds4_gpu_end_commands(), "combined normalization");
+        float *expected = malloc((dim + guard) * sizeof(float)), *actual = malloc((dim + guard) * sizeof(float));
+        ds4_gpu_tensor *left[] = {seq, xs, is}, *right[] = {next, xf, ifused};
+        for (uint32_t i = 0; i < 3; ++i) {
+            uint32_t n = (i == 2 ? ni : dim) + guard;
+            require_ok(ds4_gpu_tensor_read(left[i], 0, expected, n * 4u) && ds4_gpu_tensor_read(right[i], 0, actual, n * 4u), "fusion read");
+            check_exact_f32("combine norm output and guard", actual, expected, n);
+        }
+        require_ok(!ds4_gpu_qwen4_hc_combine_norm_tensor(old, block, oldinj, xf, ifused, old,
+            a->base, a->size, gamma, inject, 1, 1, e, hc, hc, 1.e-6f), "reject residual alias");
+        require_ok(!ds4_gpu_qwen4_hc_combine_norm_tensor(next, block, oldinj, xf, oldinj, old,
+            a->base, a->size, gamma, inject, 1, 1, e, hc, hc, 1.e-6f), "reject injection alias");
+        ds4_gpu_tensor *all[] = {old, block, oldinj, seq, next, xs, xf, is, ifused};
+        for (uint32_t i = 0; i < 9; ++i) ds4_gpu_tensor_free(all[i]);
+        free(expected); free(actual); free(r); free(blk); free(inj);
+    }
+
+    /* Concatenated projection: unequal output sizes and short/real input widths. */
+    const uint32_t widths_q8[] = {32u, 2560u}, rows_a[] = {2u, 10240u}, rows_b[] = {48u, 6144u};
+    for (uint32_t i = 0; i < 2u; ++i) {
+        uint32_t k = widths_q8[i], na = rows_a[i], nb = rows_b[i];
+        double *shadow = NULL;
+        uint64_t wa = arena_q8_0(a, na, k, &shadow, .1f); free(shadow);
+        uint64_t wb = arena_q8_0(a, nb, k, &shadow, .1f); free(shadow);
+        float *input = rand_vec(k, 1.f); ds4_gpu_tensor *x = upload(input, k);
+        ds4_gpu_tensor *ra = upload(NULL, na + guard), *rb = upload(NULL, nb + guard);
+        ds4_gpu_tensor *ca = upload(NULL, na + guard), *cb = upload(NULL, nb + guard);
+        require_ok(ds4_gpu_tensor_fill_f32(ra, 17.25f, na + guard) && ds4_gpu_tensor_fill_f32(ca, 17.25f, na + guard) &&
+            ds4_gpu_tensor_fill_f32(rb, 17.25f, nb + guard) && ds4_gpu_tensor_fill_f32(cb, 17.25f, nb + guard), "Q8 guards");
+        require_ok(ds4_gpu_begin_commands() && ds4_gpu_matmul_q8_0_tensor(ra, a->base, a->size, wa, k, na, x, 1) &&
+            ds4_gpu_matmul_q8_0_tensor(rb, a->base, a->size, wb, k, nb, x, 1) &&
+            ds4_gpu_qwen4_q8_pair_tensor(ca, cb, a->base, a->size, wa, wb, k, na, nb, x, 1) && ds4_gpu_end_commands(), "Q8 concatenated dispatch");
+        uint32_t cap = (na > nb ? na : nb) + guard;
+        float *expected = malloc(cap * 4u), *actual = malloc(cap * 4u);
+        require_ok(ds4_gpu_tensor_read(ra, 0, expected, (na + guard) * 4u) && ds4_gpu_tensor_read(ca, 0, actual, (na + guard) * 4u), "Q8 first read");
+        check_exact_f32("Q8 concatenated first output", actual, expected, na + guard);
+        require_ok(ds4_gpu_tensor_read(rb, 0, expected, (nb + guard) * 4u) && ds4_gpu_tensor_read(cb, 0, actual, (nb + guard) * 4u), "Q8 second read");
+        check_exact_f32("Q8 concatenated second output", actual, expected, nb + guard);
+        require_ok(!ds4_gpu_qwen4_q8_pair_tensor(ca, cb, a->base, a->size, wa, wb, k, na - 1u, nb, x, 1), "Q8 odd shape fallback");
+        ds4_gpu_tensor_free(x); ds4_gpu_tensor_free(ra); ds4_gpu_tensor_free(rb); ds4_gpu_tensor_free(ca); ds4_gpu_tensor_free(cb);
+        free(input); free(expected); free(actual);
+    }
+    printf("Qwen decode fusions: exact residual/injection and Q8 checks passed\n");
+}
+
 /* Match host greedy selection at SIMD/chunk boundaries and on exceptional values. */
 static void test_qwen4_argmax(void) {
     const uint32_t sizes[] = {1u, 31u, 32u, 33u, 255u, 256u, 257u, 4095u, 4096u, 4097u, 248320u};
@@ -2381,6 +2447,7 @@ int main(void) {
     require_ok(ds4_gpu_init(), "GPU initialization");
     require_ok(ds4_gpu_set_model_map(arena.base, arena.size), "model map registration");
 
+    if (getenv("DS4_TEST_QWEN4_DECODE_FUSIONS")) { test_decode_fusions(&arena); return 0; }
     if (getenv("DS4_TEST_QWEN4_MV_EXACT")) {
         test_moe_types(&arena, 8, 6, 2560, 640, 1, 16u, 10u);
         test_moe_types(&arena, 8, 6, 2560, 640, 2, 16u, 10u);
@@ -2414,6 +2481,7 @@ int main(void) {
         return 0;
     }
     printf("hyper-connections\n");
+    test_decode_fusions(&arena);
     test_qwen4_argmax();
     test_hc_pair_groups(&arena);
     test_hc(&arena, 2560, 320, 3, 1u);

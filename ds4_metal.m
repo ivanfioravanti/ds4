@@ -20016,7 +20016,7 @@ int ds4_gpu_matmul_q8_0_rows_scalar_tensor(
     return 1;
 }
 
-int ds4_gpu_matmul_q8_0_pair_tensor(
+static int ds4_gpu_matmul_q8_0_pair_impl(
         ds4_gpu_tensor       *out0,
         ds4_gpu_tensor       *out1,
         const void             *model_map,
@@ -20027,7 +20027,8 @@ int ds4_gpu_matmul_q8_0_pair_tensor(
         uint64_t                out0_dim,
         uint64_t                out1_dim,
         const ds4_gpu_tensor *x,
-        uint64_t                n_tok) {
+        uint64_t                n_tok, bool concat) {
+    if (concat && (!in_dim || ((out0_dim | out1_dim) & 1u))) return 0;
     if (!g_initialized && !ds4_gpu_init()) return 0;
     if (!out0 || !out1 || !model_map || !x || n_tok != 1 ||
         out0_dim == 0 || out1_dim == 0 || (in_dim & 31u) != 0 ||
@@ -20082,7 +20083,7 @@ int ds4_gpu_matmul_q8_0_pair_tensor(
         args0.nr0 = dispatch0.nr0;
         args1.nr0 = dispatch1.nr0;
         id<MTLComputePipelineState> pipeline =
-            ds4_gpu_get_mul_mv_pipeline("kernel_mul_mv_q8_0_f32_pair", dispatch0.nsg);
+            ds4_gpu_get_mul_mv_pipeline(concat ? "kernel_qwen4_q8_concat" : "kernel_mul_mv_q8_0_f32_pair", dispatch0.nsg);
         if (!pipeline) return 0;
 
         int owned = 0;
@@ -20099,7 +20100,7 @@ int ds4_gpu_matmul_q8_0_pair_tensor(
         [enc setBuffer:out0buf offset:ds4_gpu_tensor_offset(out0) atIndex:5];
         [enc setBuffer:out1buf offset:ds4_gpu_tensor_offset(out1) atIndex:6];
         [enc setThreadgroupMemoryLength:2u * dispatch0.smem atIndex:0];
-        const uint64_t max_out_dim = out0_dim > out1_dim ? out0_dim : out1_dim;
+        const uint64_t max_out_dim = concat ? out0_dim + out1_dim : (out0_dim > out1_dim ? out0_dim : out1_dim);
         [enc dispatchThreadgroups:MTLSizeMake(((NSUInteger)max_out_dim +
                                                (NSUInteger)dispatch0.nr0 - 1u) /
                                               (NSUInteger)dispatch0.nr0,
@@ -20112,6 +20113,36 @@ int ds4_gpu_matmul_q8_0_pair_tensor(
     }
 
     return 1;
+}
+
+int ds4_gpu_matmul_q8_0_pair_tensor(
+        ds4_gpu_tensor       *out0,
+        ds4_gpu_tensor       *out1,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight0_offset,
+        uint64_t                weight1_offset,
+        uint64_t                in_dim,
+        uint64_t                out0_dim,
+        uint64_t                out1_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok) {
+    return ds4_gpu_matmul_q8_0_pair_impl(out0, out1, model_map, model_size, weight0_offset, weight1_offset, in_dim, out0_dim, out1_dim, x, n_tok, false);
+}
+
+int ds4_gpu_qwen4_q8_pair_tensor(
+        ds4_gpu_tensor       *out0,
+        ds4_gpu_tensor       *out1,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight0_offset,
+        uint64_t                weight1_offset,
+        uint64_t                in_dim,
+        uint64_t                out0_dim,
+        uint64_t                out1_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok) {
+    return ds4_gpu_matmul_q8_0_pair_impl(out0, out1, model_map, model_size, weight0_offset, weight1_offset, in_dim, out0_dim, out1_dim, x, n_tok, true);
 }
 
 int ds4_gpu_matmul_q8_0_f16_out_tensor(
@@ -47318,6 +47349,7 @@ enum {
     QWEN4_K_MOE_MID_Q4K_NR1,
     QWEN4_K_MOE_DOWN,
     QWEN4_K_MOE_REDUCE,
+    QWEN4_K_HC_COMBINE_NORM,
     QWEN4_K_ARGMAX,
     QWEN4_K_MTP_STAGE,
     QWEN4_K_MTP_COMBINE,
@@ -47382,6 +47414,7 @@ static const char *const qwen4_kernel_names[QWEN4_K_COUNT] = {
     "kernel_qwen4_moe_mid_q4k_nr1",
     "kernel_qwen4_moe_down",
     "kernel_qwen4_moe_reduce",
+    "kernel_qwen4_hc_combine_norm_f16",
     "kernel_qwen4_argmax",
     "kernel_qwen4_mtp_stage",
     "kernel_qwen4_mtp_combine",
@@ -47541,6 +47574,48 @@ static uint32_t qwen4_expert_row_bytes(uint32_t weight_type, uint32_t in_dim) {
     case 0u:  return in_dim * 4u;            /* f32 */
     default:  return 0;
     }
+}
+
+int ds4_gpu_qwen4_decode_fusions_enabled(void) {
+    const int override = ds4_gpu_env_bool("DS4_QWEN4_DECODE_FUSIONS");
+    return override >= 0 ? override : ds4_gpu_device_name_contains("M3 Ultra");
+}
+
+int ds4_gpu_qwen4_hc_combine_norm_tensor(
+        ds4_gpu_tensor *next_R, const ds4_gpu_tensor *blk, const ds4_gpu_tensor *old_inj,
+        ds4_gpu_tensor *xn, ds4_gpu_tensor *inj_part, const ds4_gpu_tensor *R,
+        const void *model_map, uint64_t model_size, uint64_t gamma_offset, uint64_t inject_offset,
+        uint32_t weight_type, uint32_t n_tokens, uint32_t n_embd, uint32_t n_hc, uint32_t n_inject, float eps) {
+    const uint64_t dim = (uint64_t)n_embd * n_hc;
+    const uint64_t wrow = qwen4_hc_row_bytes(weight_type, dim);
+    struct { uint32_t n_tokens, n_embd, n_hc, n_inject; float eps; uint32_t pad0, pad1, pad2; } args =
+        { n_tokens, n_embd, n_hc, n_inject, eps, 0, 0, 0 };
+    qwen4_bind b[8];
+    if (n_tokens != 1u || weight_type != 1u || n_inject != n_hc) return 0;
+    if (ds4_gpu_tensor_buffer(next_R) == ds4_gpu_tensor_buffer(R) ||
+        ds4_gpu_tensor_buffer(inj_part) == ds4_gpu_tensor_buffer(old_inj)) return 0;
+    if (n_tokens == 0 || n_embd == 0 || n_hc == 0 || n_hc > 8 || n_inject > 4 || wrow == 0 || (dim % 32) != 0 ||
+        !qwen4_bind_tensor(&b[0], R, n_tokens * dim * sizeof(float), "hc norm input") ||
+        !qwen4_bind_weight(&b[1], model_map, model_size, gamma_offset, dim * sizeof(float), "hc norm gamma") ||
+        !qwen4_bind_tensor(&b[3], xn, n_tokens * dim * sizeof(float), "hc norm output")) {
+        return 0;
+    }
+    if (n_inject) {
+        if (!qwen4_bind_weight(&b[2], model_map, model_size, inject_offset, (uint64_t)n_inject * wrow, "hc inject") ||
+            !qwen4_bind_tensor(&b[4], inj_part,
+                               (uint64_t)n_tokens * n_hc * DS4_QWEN4_HC_CHUNKS * n_inject * sizeof(float),
+                               "hc inject partials")) {
+            return 0;
+        }
+    } else {
+        b[2] = b[1];
+        b[4] = b[3];
+    }
+    if (!qwen4_bind_tensor(&b[5], next_R, dim * sizeof(float), "combine norm next R") ||
+        !qwen4_bind_tensor(&b[6], blk, n_embd * sizeof(float), "combine norm block") ||
+        !qwen4_bind_tensor(&b[7], old_inj, n_hc * DS4_QWEN4_HC_CHUNKS * n_hc * sizeof(float), "combine norm old inject")) return 0;
+    return qwen4_dispatch(QWEN4_K_HC_COMBINE_NORM, &args, sizeof(args), b, 8,
+        MTLSizeMake(n_hc * DS4_QWEN4_HC_CHUNKS, 1, 1), MTLSizeMake(128, 1, 1), 0);
 }
 
 int ds4_gpu_qwen4_hc_norm_tensor(

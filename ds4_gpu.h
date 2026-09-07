@@ -3295,6 +3295,26 @@ void ds4_gpu_decode_graphs_invalidate(void);
  * NaNs cannot replace initial index zero. Scratch needs ceil(V/4096)*8 bytes. */
 int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,
                                const ds4_gpu_tensor *logits, uint32_t n_vocab);
+/* M3 Ultra decode defaults; DS4_QWEN4_DECODE_FUSIONS=0 restores old paths. */
+int ds4_gpu_qwen4_decode_fusions_enabled(void);
+/* Single-token F16 injection: old_R/old_inj and next_R/inj_part must be distinct. */
+int ds4_gpu_qwen4_hc_combine_norm_tensor(
+        ds4_gpu_tensor *next_R, const ds4_gpu_tensor *blk, const ds4_gpu_tensor *old_inj,
+        ds4_gpu_tensor *xn, ds4_gpu_tensor *inj_part, const ds4_gpu_tensor *R,
+        const void *model_map, uint64_t model_size, uint64_t gamma_offset, uint64_t inject_offset,
+        uint32_t weight_type, uint32_t n_tokens, uint32_t n_embd, uint32_t n_hc, uint32_t n_inject, float eps);
+int ds4_gpu_qwen4_q8_pair_tensor(
+        ds4_gpu_tensor       *out0,
+        ds4_gpu_tensor       *out1,
+        const void             *model_map,
+        uint64_t                model_size,
+        uint64_t                weight0_offset,
+        uint64_t                weight1_offset,
+        uint64_t                in_dim,
+        uint64_t                out0_dim,
+        uint64_t                out1_dim,
+        const ds4_gpu_tensor *x,
+        uint64_t                n_tok);
 int ds4_gpu_qwen4_hc_norm_tensor(
         ds4_gpu_tensor *xn, ds4_gpu_tensor *inj_part, const ds4_gpu_tensor *R,
         const void *model_map, uint64_t model_size, uint64_t gamma_offset, uint64_t inject_offset,
