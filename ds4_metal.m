@@ -47606,8 +47606,14 @@ int ds4_gpu_qwen4_hc_gate_mix_tensor(
                                               QWEN4_K_HC_GATE_MIX_PAIR_F32, QWEN4_K_HC_GATE_MIX_PAIR_Q8)
                             : qwen4_hc_kernel(weight_type, QWEN4_K_HC_GATE_MIX_F16, QWEN4_K_HC_GATE_MIX_F32,
                                        QWEN4_K_HC_GATE_MIX_Q8);
+    /* More independent output rows share the activated inputs in MTP.
+     * Keep the per-row lane mapping and reduction order unchanged. */
+    const uint32_t default_nsg = n_embd == 2560u && n_rank == 320u &&
+        ds4_gpu_device_name_contains("M3 Ultra") ? 16u : 4u;
+    const uint32_t nsg = pair ?
+        (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_HC_PAIR_NSG", default_nsg, 1u, 16u) : 4u;
     return qwen4_dispatch(kernel, &args, sizeof(args), b, 4,
-                          MTLSizeMake((n_embd + 3) / 4, pair ? 1u : n_tokens, 1), MTLSizeMake(128, 1, 1),
+                          MTLSizeMake((n_embd + nsg - 1u) / nsg, pair ? 1u : n_tokens, 1), MTLSizeMake(nsg * 32u, 1, 1),
                           pair ? (NSUInteger)n_rank * 2u * sizeof(float) : 0u);
 }
 

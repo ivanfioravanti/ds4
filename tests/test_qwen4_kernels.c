@@ -1421,6 +1421,43 @@ static void check_exact_f32(const char *what, const float *got, const float *ref
     }
 }
 
+/* The paired mixer must preserve both token rows and its partial-group guard. */
+static void test_hc_pair_groups(arena_t *a) {
+    const uint32_t types[] = {1u, 0u, 8u}, widths[] = {9u, 64u, 2560u};
+    const char *groups[] = {"4", "1", "2", "8", "16"};
+    for (uint32_t it = 0; it < 3u; it++) {
+        for (uint32_t iw = 0; iw < 3u; iw++) {
+            const uint32_t type = types[it], E = widths[iw], rank = iw == 1u ? 32u : 320u;
+            const uint64_t n = 2u * E, guard = 17u;
+            double *shadow = NULL;
+            const uint64_t off = type == 8u ? arena_q8_0(a, 4u * E, rank, &shadow, 0.2f) :
+                type == 1u ? arena_f16(a, (uint64_t)4u * E * rank, &shadow, 0.2f) :
+                arena_f32(a, (uint64_t)4u * E * rank, &shadow, -0.2f, 0.2f);
+            free(shadow);
+            float *xn = rand_vec(8u * E, 1.0f), *lo = rand_vec(2u * rank, 1.0f);
+            float *ref = malloc((n + guard) * sizeof(float)), *got = malloc((n + guard) * sizeof(float));
+            require_ok(ref && got, "HC pair readback allocation");
+            ds4_gpu_tensor *gx = upload(xn, 8u * E), *gl = upload(lo, 2u * rank);
+            ds4_gpu_tensor *go = upload(NULL, n + guard);
+            for (uint32_t mode = 0; mode < 5u; mode++) {
+                require_ok(setenv("DS4_QWEN4_HC_PAIR_NSG", groups[mode], 1) == 0, "HC pair override");
+                require_ok(ds4_gpu_tensor_fill_f32(go, 127.25f, n + guard) &&
+                    ds4_gpu_qwen4_hc_gate_mix_tensor(go, gx, gl, a->base, a->size, off, type, 2u, E, 4u, rank) &&
+                    ds4_gpu_tensor_read(go, 0, got, (n + guard) * sizeof(float)), "HC pair dispatch/read");
+                if (!mode) {
+                    memcpy(ref, got, (n + guard) * sizeof(float));
+                    check_exact_f32("HC pair reference finite", ref, ref, n + guard);
+                } else check_exact_f32("HC pair geometry and guard", got, ref, n + guard);
+                for (uint64_t j = n; j < n + guard; j++) require_ok(got[j] == 127.25f, "HC pair output guard");
+            }
+            ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gl); ds4_gpu_tensor_free(gx);
+            free(got); free(ref); free(lo); free(xn);
+        }
+    }
+    unsetenv("DS4_QWEN4_HC_PAIR_NSG");
+    printf("HC paired mixer geometry: all formats and guarded tails exact\n");
+}
+
 /* Freeze the stream input and weights across forced old/reuse and automatic
  * dispatch. All three share a command batch and all readbacks follow it. */
 static void test_hc_norm_reuse_case(arena_t *a, uint32_t type, uint32_t E,
@@ -2324,6 +2361,7 @@ int main(void) {
         return 0;
     }
     printf("hyper-connections\n");
+    test_hc_pair_groups(&arena);
     test_hc(&arena, 2560, 320, 3, 1u);
     test_hc(&arena, 2560, 320, 2, 1u);
     test_hc(&arena, 2560, 320, 2, 0u);

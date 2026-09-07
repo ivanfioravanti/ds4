@@ -151,6 +151,12 @@ processes four value rows per SIMD group, and Q4_K expert gate/up projections
 share input loads. These paths are enabled by default. For individual A/B
 checks, set `DS4_QWEN4_NO_MTP_BATCH=1`, `DS4_QWEN4_NO_HC_PAIR=1`,
 `DS4_QWEN4_NO_GDN_R4=1` (decode only), or `DS4_QWEN4_NO_Q4K_MID=1`.
+At the 2560-wide, rank-320 shape on M3 Ultra, paired mixers use sixteen
+SIMD groups per threadgroup to share activated inputs across more rows.
+`DS4_QWEN4_HC_PAIR_NSG=4` restores the previous grouping; values from 1 to
+16 are supported. This override applies only to the two-token paired mixer.
+See the [Q2 MTP measurements](../speed-bench/qwen38-q2-mtp.md) for the
+measured gain and parity checks.
 The GDN verification layout uses eight SIMD groups on M3 Ultra;
 `DS4_QWEN4_GDN_NSG` overrides the decode group count from 1 to 8.
 GDN prefill uses four SIMD groups on M3 Ultra for batches of at least 8192
