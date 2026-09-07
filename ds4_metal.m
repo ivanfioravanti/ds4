@@ -47421,6 +47421,7 @@ enum {
     QWEN4_K_ATTN_PREP,
     QWEN4_K_IDX_BLOCK_KEY,
     QWEN4_K_IDX_SCORE,
+    QWEN4_K_IDX_SCORE_VEC,
     QWEN4_K_IDX_SELECT,
     QWEN4_K_IDX_SCORE_MM,
     QWEN4_K_IDX_EXPAND,
@@ -47430,6 +47431,8 @@ enum {
     QWEN4_K_ATTN_MERGE_NPT8,
     QWEN4_K_ATTN_MERGE_NPT4,
     QWEN4_K_ATTN_MERGE_NPT1,
+    QWEN4_K_ATTN_MERGE_WIDE_NPT8,
+    QWEN4_K_ATTN_MERGE_WIDE_NPT4,
     QWEN4_K_ATTN_MM,
     QWEN4_K_MOE_MID,
     QWEN4_K_MOE_MID_Q4K,
@@ -47487,6 +47490,7 @@ static const char *const qwen4_kernel_names[QWEN4_K_COUNT] = {
     "kernel_qwen4_attn_prep",
     "kernel_qwen4_idx_block_key",
     "kernel_qwen4_idx_score",
+    "kernel_qwen4_idx_score_vec",
     "kernel_qwen4_idx_select",
     "kernel_qwen4_idx_score_mm",
     "kernel_qwen4_idx_expand",
@@ -47496,6 +47500,8 @@ static const char *const qwen4_kernel_names[QWEN4_K_COUNT] = {
     "kernel_qwen4_attn_merge_npt8",
     "kernel_qwen4_attn_merge_npt4",
     "kernel_qwen4_attn_merge_npt1",
+    "kernel_qwen4_attn_merge_wide_npt8",
+    "kernel_qwen4_attn_merge_wide_npt4",
     "kernel_qwen4_attn_mm",
     "kernel_qwen4_moe_mid",
     "kernel_qwen4_moe_mid_q4k",
@@ -48148,7 +48154,12 @@ int ds4_gpu_qwen4_idx_score_tensor(
         return qwen4_dispatch(QWEN4_K_IDX_SCORE_MM, &args, sizeof(args), b, 3,
                               MTLSizeMake((n_blocks + 63) / 64, (n_tokens + 15) / 16, 1), MTLSizeMake(128, 1, 1), 0);
     }
-    return qwen4_dispatch(QWEN4_K_IDX_SCORE, &args, sizeof(args), b, 3,
+    /* staged queries and vector key loads; measured on M5, other devices
+     * keep the scalar scorer */
+    const int vec_override = ds4_gpu_env_bool("DS4_QWEN4_IDX_SCORE_VEC");
+    const bool vec = n_idx_head * idx_dim <= 512u && (idx_dim & 3u) == 0u &&
+        (vec_override >= 0 ? vec_override != 0 : ds4_gpu_device_is_m5_apple_silicon());
+    return qwen4_dispatch(vec ? QWEN4_K_IDX_SCORE_VEC : QWEN4_K_IDX_SCORE, &args, sizeof(args), b, 3,
                           MTLSizeMake((n_blocks + 127) / 128, n_tokens, 1), MTLSizeMake(128, 1, 1), 0);
 }
 
@@ -48257,6 +48268,16 @@ int ds4_gpu_qwen4_attn_decode_tensor(
     }
     if (n_splits == 1) return 1;
     qwen4_bind mb[3] = { b[7], b[1], b[6] };
+    /* One thread per dim merges the same split chain with eight times the
+     * threads; measured on M5, other devices keep the simdgroup merge. */
+    const int wide_override = ds4_gpu_env_bool("DS4_QWEN4_ATTN_MERGE_WIDE");
+    const bool wide = head_dim >= 128u &&
+        (wide_override >= 0 ? wide_override != 0 : ds4_gpu_device_is_m5_apple_silicon());
+    if (wide) {
+        return qwen4_dispatch(head_dim == 256u ? QWEN4_K_ATTN_MERGE_WIDE_NPT8 : QWEN4_K_ATTN_MERGE_WIDE_NPT4,
+                              &args, sizeof(args), mb, 3,
+                              MTLSizeMake(n_head, n_tokens, 1), MTLSizeMake(head_dim, 1, 1), 0);
+    }
     return qwen4_dispatch(km, &args, sizeof(args), mb, 3,
                           MTLSizeMake(n_head, n_tokens, 1), MTLSizeMake(32, 1, 1), 0);
 }

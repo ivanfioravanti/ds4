@@ -1139,6 +1139,49 @@ kernel void kernel_qwen4_idx_score(
     score[(uint64_t)tok * args.n_blocks + b] = sum;
 }
 
+/* Same scores with the token's query rows staged once per threadgroup and
+ * the block key read as half4 vectors; every dot still adds its 128 terms
+ * in index order, so the sums are bit-identical to kernel_qwen4_idx_score. */
+kernel void kernel_qwen4_idx_score_vec(
+        constant ds4_metal_args_qwen4_idx_score & args,
+        device const float *iq,          /* [T][Hi*Di] */
+        device const half  *block_key,   /* [n_blocks][Di] */
+        device float       *score,       /* [T][n_blocks] */
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]]) {
+    threadgroup float qs[4 * 128];
+    const uint tok = tgpig.y;
+    const uint Di = args.idx_dim;
+    const uint nq = args.n_idx_head * Di;
+    if (tok >= args.n_tokens || nq > 4u * 128u || (Di & 3u) != 0u) return;
+    device const float *q = iq + (uint64_t)tok * nq;
+    for (uint i = tid; i < nq; i += ntg.x) qs[i] = q[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint b = tgpig.x * ntg.x + tid;
+    if (b >= args.n_blocks) return;
+    const uint visible = (args.pos0 + tok + 1) / args.ratio;
+    if (b >= visible) {
+        score[(uint64_t)tok * args.n_blocks + b] = -3.0e38f;
+        return;
+    }
+    device const half4 *key = (device const half4 *)(block_key + (uint64_t)b * Di);
+    float sum = 0.0f;
+    for (uint h = 0; h < args.n_idx_head; h++) {
+        const threadgroup float *qh = qs + h * Di;
+        float dot = 0.0f;
+        for (uint d = 0; d < Di; d += 4) {
+            const half4 k = key[d >> 2];
+            dot += qh[d] * (float)k.x;
+            dot += qh[d + 1] * (float)k.y;
+            dot += qh[d + 2] * (float)k.z;
+            dot += qh[d + 3] * (float)k.w;
+        }
+        sum += max(dot, 0.0f);
+    }
+    score[(uint64_t)tok * args.n_blocks + b] = sum;
+}
+
 /* Matrix-unit block scorer for 4 heads x 128 dims: a threadgroup scores 16
  * tokens x 64 blocks.  Per K half the 64 keys and the 64 query rows (16
  * tokens x 4 heads, rounded to half, stored transposed) are staged so both
@@ -1493,6 +1536,48 @@ kernel void kernel_qwen4_attn_merge(
 #pragma unroll
     for (uint i = 0; i < NPT; i++) dst[i] = o[i] * inv * qwen4_sigmoid(gt[i]);
 }
+
+/* Same merge with one thread per dim: lane d runs the split chain the
+ * 32-lane kernel ran for dim d (m and l are recomputed identically per
+ * lane), so the outputs match bit for bit with eight times the threads. */
+template <uint NPT>
+kernel void kernel_qwen4_attn_merge_wide(
+        constant ds4_metal_args_qwen4_attn_decode & args,
+        device const float *part,
+        device const float *gate,
+        device float       *out,
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]]) {
+    const uint h = tgpig.x;
+    const uint tok = tgpig.y;
+    constexpr uint D = NPT * 32;
+    if (h >= args.n_head || tok >= args.n_tokens || tid >= D) return;
+    const uint H = args.n_head, Hkv = args.n_head_kv;
+    const uint group = H / Hkv;
+    const uint kvh = h / group, g = h % group;
+    const uint64_t stride = (uint64_t)group * (2u + D);
+    device const float *base = part + (((uint64_t)tok * Hkv + kvh) * args.n_splits * group + g) * (2u + D);
+    float mm = -3.0e38f;
+    for (uint s = 0; s < args.n_splits; s++) mm = max(mm, base[s * stride]);
+    float ll = 0.0f;
+    float o = 0.0f;
+    for (uint s = 0; s < args.n_splits; s++) {
+        device const float *p = base + s * stride;
+        const float c = p[1] > 0.0f ? exp(p[0] - mm) : 0.0f;
+        ll += p[1] * c;
+        o += p[2u + tid] * c;
+    }
+    const float inv = ll > 0.0f ? 1.0f / ll : 0.0f;
+    const uint64_t at = ((uint64_t)tok * H + h) * D + tid;
+    out[at] = o * inv * qwen4_sigmoid(gate[at]);
+}
+
+#define QWEN4_ATTN_MERGE_WIDE_INSTANCE(NPT_) \
+template [[host_name("kernel_qwen4_attn_merge_wide_npt" #NPT_)]] \
+kernel void kernel_qwen4_attn_merge_wide<NPT_>(constant ds4_metal_args_qwen4_attn_decode &, device const float *, \
+        device const float *, device float *, uint3, ushort);
+QWEN4_ATTN_MERGE_WIDE_INSTANCE(8)
+QWEN4_ATTN_MERGE_WIDE_INSTANCE(4)
 
 #define QWEN4_ATTN_INSTANCE(NPT_) \
 template [[host_name("kernel_qwen4_attn_decode_npt" #NPT_)]] \
