@@ -47523,10 +47523,12 @@ typedef struct {
 
 static bool qwen4_moe_mv_specialize(uint32_t type) {
     /* Constant quantization and logical width remove the generic decode
-     * branches. Keep the original per-lane reduction order and padded stride. */
+     * branches. Keep the original per-lane reduction order and padded stride.
+     * M3 Ultra measured the low-bit types; M5 measured MXFP4 down rows. */
     const int override = ds4_gpu_env_bool("DS4_QWEN4_MOE_MV_SPECIALIZE");
     return override >= 0 ? override != 0 :
-        (type == 16u || type == 10u) && ds4_gpu_device_name_contains("M3 Ultra");
+        ((type == 16u || type == 10u) && ds4_gpu_device_name_contains("M3 Ultra")) ||
+        (type == 39u && ds4_gpu_device_is_m5_apple_silicon());
 }
 
 static uint32_t qwen4_moe_mv_rows(void) {
@@ -47534,7 +47536,11 @@ static uint32_t qwen4_moe_mv_rows(void) {
 }
 
 static uint32_t qwen4_moe_mv_groups(uint32_t type) {
-    const uint32_t default_nsg = type == 10u && ds4_gpu_device_name_contains("M3 Ultra") ? 16u : 8u;
+    /* Sixteen SIMD groups per threadgroup measured best for Q2_K on M3 Ultra
+     * and for MXFP4 on M5; each group keeps its own rows and lane order. */
+    const uint32_t default_nsg =
+        (type == 10u && ds4_gpu_device_name_contains("M3 Ultra")) ||
+        (type == 39u && ds4_gpu_device_is_m5_apple_silicon()) ? 16u : 8u;
     return (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_MOE_MV_NSG", default_nsg, 1u, 16u);
 }
 
@@ -48256,15 +48262,17 @@ int ds4_gpu_qwen4_moe_mid_tensor(
     const bool q4k = weight_type == 12u && getenv("DS4_QWEN4_NO_Q4K_MID") == NULL;
     const bool m3_ultra = q4k && ds4_gpu_device_name_contains("M3 Ultra");
     /* One row per SIMD group improves both single-token decode and the
-     * two-token MTP verifier on M3 Ultra without changing dot-product order. */
-    const uint32_t default_nr = m3_ultra && n_tokens <= 2u ? 1u : 2u;
+     * two-token MTP verifier on M3 Ultra without changing dot-product order.
+     * M5 measured the single-token case with four groups per threadgroup. */
+    const bool m5_single = q4k && n_tokens == 1u && ds4_gpu_device_is_m5_apple_silicon();
+    const uint32_t default_nr = (m3_ultra && n_tokens <= 2u) || m5_single ? 1u : 2u;
     const bool specialize = !q4k && qwen4_moe_mv_specialize(weight_type);
     const uint64_t nr_env = q4k ?
         ds4_gpu_env_u64("DS4_QWEN4_Q4K_MID_NR", default_nr, 1u, UINT64_MAX) :
         (specialize ? qwen4_moe_mv_rows() : 2u);
     const uint32_t nr = nr_env >= 1u && nr_env <= (q4k ? 2u : 4u) ? (uint32_t)nr_env : default_nr;
     /* NR2 without an NSG override restores the former ordered dispatch. */
-    const uint32_t default_nsg = m3_ultra && nr == 1u ? 8u : 2u;
+    const uint32_t default_nsg = nr != 1u ? 2u : m3_ultra ? 8u : m5_single ? 4u : 2u;
     const uint32_t nsg = q4k ?
         (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_Q4K_MID_NSG", default_nsg, 1u, 8u) :
         (specialize ? qwen4_moe_mv_groups(weight_type) : 4u);
