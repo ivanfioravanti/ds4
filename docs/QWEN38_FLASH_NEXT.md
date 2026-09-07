@@ -102,6 +102,18 @@ stay off on M5, where they measured slower. See
 [the M5 Max round-one report](../speed-bench/qwen38-m5-round1.md) for the
 single-engine A/B measurements, exact-logit checks and the sweep through 128K.
 
+The second M5 round adds, still bit-exact: narrow single-token F16/F32
+matvecs (hyper-connection low-rank down, router) launched one row per SIMD
+group (`DS4_METAL_PLAIN_MV_NR0`), 1024-thread GDN front threadgroups
+(`DS4_QWEN4_GDN_FRONT_THREADS`), expert-major prefill tile order
+(`DS4_QWEN4_MOE_MM_ORDER`), a decode indexer scorer with staged queries and
+vector key loads, a one-thread-per-dim split-attention merge and an exact
+tile-max prefiltered top-k for long contexts (`DS4_QWEN4_IDX_SCORE_VEC`,
+`DS4_QWEN4_ATTN_MERGE_WIDE`, `DS4_QWEN4_IDX_PREFILTER`), and, on every
+device, an MTP rejection rollback that swaps the live and snapshot state
+buffers instead of copying them (`DS4_QWEN4_MTP_SWAP_RESTORE=0` restores the
+copy). See [the round-two report](../speed-bench/qwen38-m5-round2.md).
+
 The older recipes below keep PLE inside the main GGUF, so their file sizes
 are not directly comparable with the external-PLE builds.
 
