@@ -55645,6 +55645,35 @@ static bool qwen4_graph_state_copy(ds4_qwen4_gpu_graph *g, bool save) {
     return ok;
 }
 
+/* A rejected draft returns to the state the verify snapshotted after row 0,
+ * and that snapshot is a complete copy: swap the live and snapshot buffers
+ * instead of copying 36 layers of recurrent state back through the GPU.
+ * The stale buffers become the next snapshot targets, which every snapshot
+ * kernel overwrites in full, so the snapshot is marked invalid until then.
+ * DS4_QWEN4_MTP_SWAP_RESTORE=0 keeps the copying restore for comparisons. */
+static bool qwen4_graph_state_swap(ds4_qwen4_gpu_graph *g) {
+    if (!g->snap_ple_hist) return false;
+    const char *env = getenv("DS4_QWEN4_MTP_SWAP_RESTORE");
+    if (env && env[0] && strcmp(env, "0") == 0) return qwen4_graph_state_copy(g, false);
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        if (!g->snap_lin_state[il]) continue;
+        ds4_gpu_tensor *t = g->layer_lin_state[il];
+        g->layer_lin_state[il] = g->snap_lin_state[il];
+        g->snap_lin_state[il] = t;
+        t = g->layer_lin_hist[il];
+        g->layer_lin_hist[il] = g->snap_lin_hist[il];
+        g->snap_lin_hist[il] = t;
+    }
+    ds4_gpu_tensor *t = g->ple_hist;
+    g->ple_hist = g->snap_ple_hist;
+    g->snap_ple_hist = t;
+    memcpy(g->ple_prev, g->snap_ple_prev, sizeof(g->ple_prev));
+    g->pos = g->snap_pos;
+    g->mrope_delta = g->snap_mrope_delta;
+    g->snap_valid = false;
+    return true;
+}
+
 /* One or two causal predictor steps at idx, using consecutive rows of the
  * trunk's pre-mixer streams and the embeddings of their following tokens.
  * The nextn layer runs on its own residual; want_logits returns the last
@@ -69974,7 +70003,7 @@ static int ds4_session_qwen4_spec_cycle(ds4_session *s, int first_token, float t
         accepted[1] = d;
         return 2;
     }
-    if (!g->snap_valid || !qwen4_graph_state_copy(g, false)) {
+    if (!g->snap_valid || !qwen4_graph_state_swap(g)) {
         if (errlen) snprintf(err, errlen, "Qwen3.8 mtp: rejection restore failed");
         s->checkpoint_valid = false;
         return -1;
