@@ -27826,7 +27826,11 @@ static int ds4_gpu_encode_flash_kv_stage_f16(
         [enc setComputePipelineState:g_flash_kv_stage_f16_pipeline];
         [enc setBytes:&args length:sizeof(args) atIndex:0];
         [enc setBuffer:raw offset:raw_offset atIndex:1];
-        [enc setBuffer:comp offset:comp_offset atIndex:2];
+        /* Metal still requires a binding at index 2 when the compressed side
+         * is empty; bind raw as the dummy, matching the mask/pad trick. */
+        [enc setBuffer:(n_comp ? comp : raw)
+                 offset:(n_comp ? comp_offset : raw_offset)
+                atIndex:2];
         [enc setBuffer:dst offset:dst_offset atIndex:3];
         [enc setBuffer:(use_pad_fusion ? mask : dst)
                  offset:(use_pad_fusion ? mask_offset : dst_offset)
