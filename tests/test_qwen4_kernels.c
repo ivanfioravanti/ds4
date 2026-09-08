@@ -1646,9 +1646,9 @@ static void test_qwen4_argmax(void) {
  * on every lane path: ranks that skip the eight-term rounds, that end in a
  * remainder, and the production 320, for one and several tokens. */
 static void test_hc_mix_prefetch(arena_t *a) {
-    const uint32_t ranks[] = {8u, 72u, 136u, 200u, 320u}, tokens[] = {1u, 3u};
+    const uint32_t ranks[] = {8u, 72u, 136u, 200u, 320u}, tokens[] = {1u, 3u, 2u};
     for (uint32_t ir = 0; ir < 5u; ir++) {
-        for (uint32_t it = 0; it < 2u; it++) {
+        for (uint32_t it = 0; it < 3u; it++) {
             const uint32_t rank = ranks[ir], T = tokens[it], E = rank == 320u ? 2560u : 96u;
             const uint64_t n = (uint64_t)T * E, guard = 13u;
             double *shadow = NULL;
@@ -1673,7 +1673,7 @@ static void test_hc_mix_prefetch(arena_t *a) {
         }
     }
     unsetenv("DS4_QWEN4_HC_MIX_PREFETCH");
-    printf("HC prefetched mixer: exact against the plain kernel on all lane paths\n");
+    printf("HC prefetched mixers (single and paired): exact against the plain kernels on all lane paths\n");
 }
 
 static void test_hc_pair_groups(arena_t *a) {

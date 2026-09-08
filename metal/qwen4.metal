@@ -360,6 +360,64 @@ kernel void kernel_qwen4_hc_gate_mix_pair(
     }
 }
 
+/* Paired F16 gate/mix with eight weights and eight activated pairs loaded
+ * ahead per lane round.  The shipped pair loop runs as a fused multiply-add
+ * chain acc = fma(w, act, acc) per element (unlike the single-row mixer,
+ * which the backend leaves unfused); that chain is spelled out here with
+ * reassociation pinned off, so both rows are byte-identical to
+ * kernel_qwen4_hc_gate_mix_pair_f16 (tests/test_qwen4_kernels.c pins them). */
+kernel void kernel_qwen4_hc_gate_mix_pair_f16_pf(
+        constant ds4_metal_args_qwen4_hc_gate_mix & args,
+        device const float *xn,
+        device const float *lo,
+        device const char *w_up,
+        device float *mixed,
+        threadgroup float2 *activated [[threadgroup(0)]],
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]]) {
+    const uint E = args.n_embd, hc = args.n_hc, rank = args.n_rank;
+    const uint d = tgpig.x * (ntg.x / 32) + sgitg;
+    for (uint r = tid; r < rank; r += ntg.x) {
+        activated[r] = float2(qwen4_silu(lo[r] / (float)hc),
+                              qwen4_silu(lo[rank + r] / (float)hc));
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (d >= E) return;
+    const uint s = tiisg / 8, lane = tiisg % 8;
+    device const half *wr = (device const half *)w_up + (uint64_t)(s * E + d) * rank;
+    float2 acc = 0.0f;
+    uint r = lane;
+    for (; r + 56u < rank; r += 64u) {
+        float wv[8];
+        float2 av[8];
+        for (uint i = 0; i < 8; i++) { wv[i] = (float)wr[r + 8u * i]; av[i] = activated[r + 8u * i]; }
+        for (uint i = 0; i < 8; i++) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+            acc = fma(float2(wv[i]), av[i], acc);
+        }
+    }
+    for (; r < rank; r += 8u) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+        acc = fma(float2((float)wr[r]), activated[r], acc);
+    }
+    acc += simd_shuffle_xor(acc, 1);
+    acc += simd_shuffle_xor(acc, 2);
+    acc += simd_shuffle_xor(acc, 4);
+    float2 v = float2(qwen4_sigmoid(acc.x) * xn[s * E + d],
+                      qwen4_sigmoid(acc.y) * xn[E * hc + s * E + d]);
+    v += simd_shuffle_xor(v, 8);
+    v += simd_shuffle_xor(v, 16);
+    if (tiisg == 0) {
+        mixed[d] = v.x / (float)hc;
+        mixed[E + d] = v.y / (float)hc;
+    }
+}
+
 #define QWEN4_HC_MIX_PAIR_INSTANCE(SUFFIX, W) \
 template [[host_name("kernel_qwen4_hc_gate_mix_pair_" #SUFFIX)]] \
 kernel void kernel_qwen4_hc_gate_mix_pair<W>(constant ds4_metal_args_qwen4_hc_gate_mix &, device const float *, \
