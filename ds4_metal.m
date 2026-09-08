@@ -48658,6 +48658,46 @@ int ds4_gpu_qwen4_moe_mm_down_tensor(
     return 1;
 }
 
+int ds4_gpu_qwen4_matmul_q8_0_weights_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *w,
+                                             uint32_t in_dim, uint32_t out_dim, const ds4_gpu_tensor *x) {
+    if (!g_initialized && !ds4_gpu_init()) return 0;
+    if ((in_dim & 31u) != 0 || !out_dim) return 0;
+    const uint64_t row_bytes = (uint64_t)(in_dim / 32u) * 34u;
+    @autoreleasepool {
+        id<MTLBuffer> xbuf = ds4_gpu_tensor_buffer(x);
+        id<MTLBuffer> outbuf = ds4_gpu_tensor_buffer(out);
+        id<MTLBuffer> wbuf = ds4_gpu_tensor_buffer(w);
+        if (!xbuf || !outbuf || !wbuf ||
+            ds4_gpu_tensor_bytes(x) < (uint64_t)in_dim * sizeof(float) ||
+            ds4_gpu_tensor_bytes(out) < (uint64_t)out_dim * sizeof(float) ||
+            ds4_gpu_tensor_bytes(w) < (uint64_t)out_dim * row_bytes) {
+            fprintf(stderr, "ds4: Metal Q8_0 tensor-weight matvec received undersized buffers\n");
+            return 0;
+        }
+        int owned = 0;
+        id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
+        if (!cb) return 0;
+        ds4_gpu_q8_0_matvec_args mv_args = ds4_gpu_make_q8_0_mv_args(in_dim, out_dim);
+        ds4_gpu_mv_dispatch mv_dispatch = ds4_gpu_make_q8_0_mv_dispatch();
+        if (out_dim > 65536u) mv_dispatch.nsg = 8;
+        mv_args.nr0 = mv_dispatch.nr0;
+        id<MTLComputePipelineState> pipeline =
+            ds4_gpu_get_mul_mv_pipeline(mv_dispatch.function_name, mv_dispatch.nsg);
+        if (!pipeline) return 0;
+        id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
+        [enc setComputePipelineState:pipeline];
+        [enc setBytes:&mv_args length:sizeof(mv_args) atIndex:0];
+        [enc setBuffer:wbuf offset:ds4_gpu_tensor_offset(w) atIndex:1];
+        [enc setBuffer:xbuf offset:ds4_gpu_tensor_offset(x) atIndex:2];
+        [enc setBuffer:outbuf offset:ds4_gpu_tensor_offset(out) atIndex:3];
+        [enc setThreadgroupMemoryLength:mv_dispatch.smem atIndex:0];
+        [enc dispatchThreadgroups:MTLSizeMake(((NSUInteger)out_dim + (NSUInteger)mv_dispatch.nr0 - 1u) / (NSUInteger)mv_dispatch.nr0, 1, 1)
+             threadsPerThreadgroup:MTLSizeMake(32, (NSUInteger)mv_dispatch.nsg, 1)];
+        ds4_gpu_end_compute_encoder(cb, enc);
+        return ds4_gpu_finish_command_buffer(cb, owned, "Q8_0 tensor-weight matvec") ? 1 : 0;
+    }
+}
+
 int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,
                                const ds4_gpu_tensor *logits, uint32_t n_vocab) {
     if (!n_vocab || n_vocab > INT32_MAX) return 0;
