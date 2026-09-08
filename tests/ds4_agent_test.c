@@ -593,6 +593,22 @@ static void test_observation_error_is_not_context_exhaustion(void) {
     ds4_tokens_free(&worker.transcript);
 }
 
+static void test_generation_preserves_compaction_room(void) {
+    agent_config cfg = {0};
+    cfg.gen.ctx_size = 64000;
+    agent_worker worker = {.cfg = &cfg};
+    int used = 50000;
+    int budget = agent_generation_budget(64000, used, 64000);
+    AGENT_TEST_ASSERT(budget == 5999);
+    /* Include the assistant end token, just as the generation loop does. */
+    worker.transcript.len = used + budget + 1;
+    AGENT_TEST_ASSERT(64000 - worker.transcript.len == 8000);
+    AGENT_TEST_ASSERT(agent_worker_should_compact(&worker));
+    AGENT_TEST_ASSERT(agent_generation_budget(64000, used, 100) == 100);
+    AGENT_TEST_ASSERT(agent_generation_budget(64000, 64000, 100) == 0);
+    AGENT_TEST_ASSERT(agent_generation_budget(8192, 6000, 8192) == 1167);
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--terminal-driver")) return test_terminal_driver();
     if (argc == 3 && !strcmp(argv[1], "--terminal-fixtures")) test_output_dir = argv[2];
@@ -603,6 +619,7 @@ int main(int argc, char **argv) {
     AGENT_TEST_ASSERT(cfg.engine.vision_path && !strcmp(cfg.engine.vision_path, "mmproj.gguf"));
     AGENT_TEST_ASSERT(cfg.engine.model_path && !strcmp(cfg.engine.model_path, "qwen.gguf"));
     ds4_agent_unit_tests_run();
+    test_generation_preserves_compaction_room();
     test_observation_error_is_not_context_exhaustion();
     test_atomic_file_tools();
     test_streaming_file_tools();

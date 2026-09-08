@@ -4803,8 +4803,12 @@ static bool agent_kv_save_path(agent_worker *w, const char *path,
                                const char *session_title,
                                uint64_t session_created_at,
                                char *err, size_t err_len) {
+    /* Full transcripts cannot be synced: the backend requires generation
+     * room. Preserve them in the existing stripped-session format instead. */
+    const bool text_only = session_title != NULL &&
+        tokens->len >= agent_worker_effective_ctx_size(w);
     const ds4_tokens *live = ds4_session_tokens(w->session);
-    if (!agent_tokens_equal(live, tokens)) {
+    if (!text_only && !agent_tokens_equal(live, tokens)) {
         snprintf(err, err_len, "live KV state does not match session transcript");
         return false;
     }
@@ -4839,7 +4843,7 @@ static bool agent_kv_save_path(agent_worker *w, const char *path,
 
     ds4_session_payload_file staged = {0};
     char save_err[160] = {0};
-    if (ds4_session_stage_payload(w->session, &staged,
+    if (!text_only && ds4_session_stage_payload(w->session, &staged,
                                   save_err, sizeof(save_err)) != 0) {
         snprintf(err, err_len, "%s",
                  save_err[0] ? save_err : "session has no valid KV payload");
@@ -4886,8 +4890,8 @@ static bool agent_kv_save_path(agent_worker *w, const char *path,
     bool ok = fwrite(h, 1, sizeof(h), fp) == sizeof(h) &&
               fwrite(tb, 1, sizeof(tb), fp) == sizeof(tb) &&
               fwrite(text, 1, text_len, fp) == text_len &&
-              ds4_session_write_staged_payload(&staged, fp,
-                                               save_err, sizeof(save_err)) == 0 &&
+              (text_only || ds4_session_write_staged_payload(&staged, fp,
+                                               save_err, sizeof(save_err)) == 0) &&
               (!session_identity ||
                agent_kv_write_title_trailer(fp, session_title,
                                             save_err, sizeof(save_err))) &&
@@ -5307,7 +5311,9 @@ static bool agent_worker_save_session_now(agent_worker *w, char sha_out[41],
         return false;
     }
 
-    if (agent_worker_sync_tokens(w, &w->transcript, false, err, err_len) != 0)
+    const bool text_only = w->transcript.len >= agent_worker_effective_ctx_size(w);
+    if (!text_only &&
+        agent_worker_sync_tokens(w, &w->transcript, false, err, err_len) != 0)
         return false;
     if (!agent_mkdir_p(w->cache_dir)) {
         snprintf(err, err_len, "failed to create %s", w->cache_dir);
@@ -5337,6 +5343,8 @@ static bool agent_worker_save_session_now(agent_worker *w, char sha_out[41],
                                  err, err_len);
     if (ok) {
         memcpy(w->session_sha, sha, sizeof(w->session_sha));
+        if (text_only)
+            agent_publishf(w, "Saved full transcript without KV; restart with a larger --ctx, then /switch %.8s and /compact.\n", sha);
         if (w->legacy_session_path_to_delete &&
             strcmp(w->legacy_session_path_to_delete, path) != 0)
         {
@@ -9379,15 +9387,27 @@ static char *agent_bash_jobs_compaction_observation(agent_worker *w) {
 /* Decide when to compact before an ordinary turn or before appending a large
  * tool result.  The fixed free-token threshold is capped proportionally for
  * smaller contexts so tests with tiny contexts still compact rather than fail. */
+static int agent_compact_reserve(int ctx) {
+    int reserve = ctx / 8;
+    if (reserve > AGENT_COMPACT_MIN_FREE_TOKENS)
+        reserve = AGENT_COMPACT_MIN_FREE_TOKENS;
+    return reserve;
+}
+
+/* Leave space for the private summary exchange and the assistant end token,
+ * even when a single response runs past the soft compaction threshold. */
+static int agent_generation_budget(int ctx, int used, int requested) {
+    int room = ctx - used - agent_compact_reserve(ctx) - 1;
+    if (room < 0) room = 0;
+    return requested < room ? requested : room;
+}
+
 static bool agent_worker_should_compact(agent_worker *w) {
     int ctx = agent_worker_effective_ctx_size(w);
     int used = w->transcript.len;
     if (ctx <= 0 || used <= 0) return false;
     if (used >= (ctx * AGENT_COMPACT_SOFT_PERCENT) / 100) return true;
-    int free_threshold = AGENT_COMPACT_MIN_FREE_TOKENS;
-    int proportional = ctx / 8;
-    if (free_threshold > proportional) free_threshold = proportional;
-    return ctx - used <= free_threshold;
+    return ctx - used <= agent_compact_reserve(ctx);
 }
 
 static int agent_special_token_id(ds4_engine *engine, const char *rendered) {
@@ -9964,10 +9984,9 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             return 1;
         }
 
-        int max_tokens = cfg->gen.n_predict;
-        int room = ds4_session_ctx(w->session) - ds4_session_pos(w->session);
-        if (room <= 1) max_tokens = 0;
-        else if (max_tokens > room - 1) max_tokens = room - 1;
+        int max_tokens = agent_generation_budget(ds4_session_ctx(w->session),
+                                                 ds4_session_pos(w->session),
+                                                 cfg->gen.n_predict);
 
         bool use_color = isatty(STDOUT_FILENO) != 0;
         agent_token_renderer renderer = {
@@ -10188,6 +10207,23 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
 
         if (!got_tool && !malformed_tool && !early_tool_error) {
             agent_dsml_parser_free(&dsml);
+            if (generated == max_tokens && max_tokens < cfg->gen.n_predict) {
+                if (!agent_worker_compact(w, "generation reached compaction reserve",
+                                          compact_err, sizeof(compact_err))) {
+                    if (agent_err_is_interrupted(compact_err)) {
+                        worker_clear_interrupt(w);
+                        agent_set_status(w, AGENT_WORKER_IDLE);
+                        return 0;
+                    }
+                    agent_set_error(w, compact_err[0] ? compact_err : "context compaction failed");
+                    return 1;
+                }
+                ds4_chat_append_message(w->engine, &w->transcript, "user",
+                    "[Internal context management: the previous response was cut short "
+                    "to compact context. Continue the existing user task from the saved "
+                    "state; do not repeat completed work.]");
+                continue;
+            }
             agent_set_status(w, AGENT_WORKER_IDLE);
             return 0;
         }
