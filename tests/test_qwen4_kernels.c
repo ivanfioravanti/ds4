@@ -1435,6 +1435,26 @@ static void test_moe_types(arena_t *a, uint32_t NE, uint32_t slots, uint32_t E, 
         unsetenv("DS4_QWEN4_MOE_MV_NSG");
         free(bm); free(bp); free(am); free(ap);
     }
+    if (dtype == 39u && getenv("DS4_TEST_QWEN4_MV_EXACT")) {
+        /* The prefetched MXFP4 down rows must match the plain kernel byte for
+         * bit, shared Q8 slot included, at the default and generic geometries. */
+        const uint64_t np = (uint64_t)T * n_out * E;
+        float *bp = malloc(np * sizeof(float)), *ap = malloc(np * sizeof(float));
+        require_ok(bp && ap, "down prefetch allocation");
+        for (uint32_t spec = 0; spec < 2u; spec++) {
+            setenv("DS4_QWEN4_MOE_MV_SPECIALIZE", spec ? "1" : "0", 1);
+            for (uint32_t mode = 0; mode < 2u; mode++) {
+                setenv("DS4_QWEN4_MOE_DOWN_PREFETCH", mode ? "1" : "0", 1);
+                require_ok(ds4_gpu_qwen4_moe_down_tensor(gpart, gmid, gsel, a->base, a->size,
+                    down_off, dtype, NE, T, slots, F, E, sd_off, shared_type), "down prefetch dispatch");
+                require_ok(ds4_gpu_tensor_read(gpart, 0, mode ? ap : bp, np * sizeof(float)), "down prefetch read");
+            }
+            check_exact_f32(spec ? "prefetched MXFP4 down, specialized" : "prefetched MXFP4 down, generic", ap, bp, np);
+        }
+        unsetenv("DS4_QWEN4_MOE_MV_SPECIALIZE");
+        unsetenv("DS4_QWEN4_MOE_DOWN_PREFETCH");
+        free(bp); free(ap);
+    }
     if (dtype == 10u) {
         require_ok(!ds4_gpu_qwen4_moe_down_tensor(gpart, gmid, gsel, a->base, a->size, down_off,
                     dtype, NE, T, slots, F + 1u, E, 0, UINT32_MAX),

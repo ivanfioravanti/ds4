@@ -2428,6 +2428,92 @@ kernel void kernel_qwen4_moe_down(
     }
 }
 
+/* MXFP4 routed down rows with four blocks per lane requested before the
+ * accumulation chain.  The shipped qwen4_row_dot loop for type 39 compiles
+ * to s = t0*y0 + t1*y1 + t2*y16 + t3*y17 (left to right), acc += s*d; that
+ * order is spelled out with reassociation pinned off (tests/test_qwen4_kernels.c
+ * pins the rows against kernel_qwen4_moe_down).  The shared Q8 slot keeps the
+ * generic row dot. */
+#define QWEN4_MXFP4_PF_ACC(E_, Q0_, Q1_, Y0_, Y1_, Y16_, Y17_) do { \
+    const float d_ = ds4_metal_e8m0_to_f32(E_); \
+    const float t0_ = ds4_metal_mxfp4_values[(Q0_) & 0xfu], t1_ = ds4_metal_mxfp4_values[(Q1_) & 0xfu]; \
+    const float t2_ = ds4_metal_mxfp4_values[(Q0_) >> 4], t3_ = ds4_metal_mxfp4_values[(Q1_) >> 4]; \
+    float s_ = t0_ * (Y0_); \
+    /*ACC1*/ s_ = fma(t1_, (Y1_), s_);\
+    /*ACC2*/ s_ = fma(t2_, (Y16_), s_);\
+    /*ACC3*/ s_ = fma(t3_, (Y17_), s_);\
+    /*ACC4*/ acc = acc + s_ * d_;\
+} while (0)
+
+kernel void kernel_qwen4_moe_down_mxfp4_pf(
+        constant ds4_metal_args_qwen4_moe & args,
+        device const char    *down_base,
+        device const int32_t *selected,
+        device const float   *mid,
+        device float         *part,
+        device const char    *sh_down,
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]]) {
+    const uint slot = tgpig.y;
+    const uint tok = tgpig.z;
+    const uint n_out = args.n_slots + args.has_shared;
+    const uint nr = is_function_constant_defined(qwen4_mv_rows) ? qwen4_mv_rows : 2u;
+    const uint dim = is_function_constant_defined(qwen4_mv_dim) ? qwen4_mv_dim : args.in_dim;
+    const uint st = is_function_constant_defined(qwen4_mv_shared_type) ? qwen4_mv_shared_type : args.shared_type;
+    const uint row0 = (tgpig.x * (ntg.x / 32u) + (uint)sgitg) * nr;
+    if (row0 >= args.out_rows || slot >= n_out || tok >= args.n_tokens) return;
+    const uint64_t pair = (uint64_t)tok * n_out + slot;
+    device const float *m = mid + pair * args.in_dim;
+    if (slot == args.n_slots) {
+        for (uint r = row0; r < row0 + nr && r < args.out_rows; r++) {
+            const float v = qwen4_row_dot(sh_down + (uint64_t)r * args.shared_row_bytes, m, st, dim, tiisg);
+            if (tiisg == 0) part[pair * args.out_rows + r] = v;
+        }
+        return;
+    }
+    const uint64_t ebase = (uint64_t)(uint)selected[(uint64_t)tok * args.n_slots + slot] * args.expert_bytes;
+    const uint ix = tiisg / 8, it = tiisg % 8;
+    const uint nb = dim / 32;
+    for (uint r = row0; r < row0 + nr && r < args.out_rows; r++) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+        device const uchar *row = (device const uchar *)(down_base + ebase + (uint64_t)r * args.row_bytes);
+        float acc = 0.0f;
+        uint ib = ix;
+        for (; ib + 12u < nb; ib += 16u) {
+            device const uchar *b0 = row + (uint64_t)ib * 17u;
+            device const uchar *b1 = b0 + 4u * 17u, *b2 = b0 + 8u * 17u, *b3 = b0 + 12u * 17u;
+            device const float *y0 = m + ib * 32u + it * 2u;
+            device const float *y1 = y0 + 128u, *y2 = y0 + 256u, *y3 = y0 + 384u;
+            const uchar e0 = b0[0], e1 = b1[0], e2 = b2[0], e3 = b3[0];
+            const uint p0 = b0[1 + it * 2u], q0 = b0[2 + it * 2u];
+            const uint p1 = b1[1 + it * 2u], q1 = b1[2 + it * 2u];
+            const uint p2 = b2[1 + it * 2u], q2 = b2[2 + it * 2u];
+            const uint p3 = b3[1 + it * 2u], q3 = b3[2 + it * 2u];
+            const float y0a = y0[0], y0b = y0[1], y0c = y0[16], y0d = y0[17];
+            const float y1a = y1[0], y1b = y1[1], y1c = y1[16], y1d = y1[17];
+            const float y2a = y2[0], y2b = y2[1], y2c = y2[16], y2d = y2[17];
+            const float y3a = y3[0], y3b = y3[1], y3c = y3[16], y3d = y3[17];
+            QWEN4_MXFP4_PF_ACC(e0, p0, q0, y0a, y0b, y0c, y0d);
+            QWEN4_MXFP4_PF_ACC(e1, p1, q1, y1a, y1b, y1c, y1d);
+            QWEN4_MXFP4_PF_ACC(e2, p2, q2, y2a, y2b, y2c, y2d);
+            QWEN4_MXFP4_PF_ACC(e3, p3, q3, y3a, y3b, y3c, y3d);
+        }
+        for (; ib < nb; ib += 4u) {
+            device const uchar *b0 = row + (uint64_t)ib * 17u;
+            device const float *y0 = m + ib * 32u + it * 2u;
+            const uchar e0 = b0[0];
+            const uint p0 = b0[1 + it * 2u], q0 = b0[2 + it * 2u];
+            const float y0a = y0[0], y0b = y0[1], y0c = y0[16], y0d = y0[17];
+            QWEN4_MXFP4_PF_ACC(e0, p0, q0, y0a, y0b, y0c, y0d);
+        }
+        const float v = simd_sum(acc);
+        if (tiisg == 0) part[pair * args.out_rows + r] = v;
+    }
+}
+
 struct ds4_metal_args_qwen4_moe_reduce {
     uint32_t n_tokens;
     uint32_t n_slots;
