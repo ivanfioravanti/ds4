@@ -114,6 +114,8 @@ device, an MTP rejection rollback that swaps the live and snapshot state
 buffers instead of copying them (`DS4_QWEN4_MTP_SWAP_RESTORE=0` restores the
 copy). See [the round-two report](../speed-bench/qwen38-m5-round2.md).
 
+Round 3 on M5 Max (`speed-bench/qwen38-m5-round3.md`) turned the round-2 fast-math lesson into a method: dump the runtime library to AIR, replicate each hot loop's *compiled* op order with `#pragma clang fp reassociate(off)` / `contract(off)`, then find the backend's fusion form by a fixture sweep (no fma for the single-row mixer, fma chains for the paired mixer and the Q8 matvec, a mixed form for Q4_K, fma inner sums for MXFP4). With that, register-prefetch rewrites became exact: the F16 hyper-connection gate/mix (+2.05% plain decode; `DS4_QWEN4_HC_MIX_PREFETCH`), its paired MTP-verify kernel (+1.1 to +1.3% MTP), and the MXFP4 routed down rows (+0.4%; `DS4_QWEN4_MOE_DOWN_PREFETCH`). The one-row Q4_K gate/up geometry now also covers the two-row MTP passes (+1.0 to +2.8% MTP; `DS4_QWEN4_Q4K_MID_NR`/`_NSG`). Rejected with numbers in the report: Q8 dense and Q4_K mid prefetches, row-block-major tensor-op GEMM order, and a prefill-row prefilter. Tooling: `qwen38_decode_variant_bench --mtp`, `qwen38_mtp_compare.py --baseline-env`, `DS4_METAL_MV_EXT_NSG`. Opt-in, off by default: the MTP draft head can score a vocabulary subset (`DS4_QWEN4_MTP_DRAFT_ROWS`, `DS4_QWEN4_MTP_DRAFT_VOCAB`; MTPLX's FR-Spec idea), +1.8 to +2.8% MTP with identical outputs but acceptance counters that can move. See [the round-three report](../speed-bench/qwen38-m5-round3.md).
+
 The older recipes below keep PLE inside the main GGUF, so their file sizes
 are not directly comparable with the external-PLE builds.
 
