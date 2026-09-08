@@ -2615,13 +2615,19 @@ static id<MTLComputePipelineState> ds4_gpu_get_pipeline(
         const char *function_name) {
     NSString *key = [NSString stringWithFormat:@"%s", function_name];
     id<MTLComputePipelineState> cached = [g_pipeline_cache objectForKey:key];
-    if (cached) return cached;
+    if (cached) {
+        /* Failed lookups are remembered as NSNull so the error prints once
+         * per name instead of on every dispatch. */
+        if (cached == (id<MTLComputePipelineState>)[NSNull null]) return nil;
+        return cached;
+    }
 
     NSError *error = nil;
     NSString *name = [NSString stringWithUTF8String:function_name];
     id<MTLFunction> fn = [g_library newFunctionWithName:name];
     if (!fn) {
         fprintf(stderr, "ds4: Metal %s function not found\n", function_name);
+        [g_pipeline_cache setObject:(id<MTLComputePipelineState>)[NSNull null] forKey:key];
         return nil;
     }
 
@@ -2629,6 +2635,7 @@ static id<MTLComputePipelineState> ds4_gpu_get_pipeline(
     if (!pipeline) {
         fprintf(stderr, "ds4: Metal %s pipeline failed: %s\n",
                 function_name, [[error localizedDescription] UTF8String]);
+        [g_pipeline_cache setObject:(id<MTLComputePipelineState>)[NSNull null] forKey:key];
         return nil;
     }
 
@@ -47635,7 +47642,20 @@ static int qwen4_dispatch(int kernel, const void *args, size_t args_len,
         } else {
             if (!g_qwen4_pipelines[kernel]) {
                 g_qwen4_pipelines[kernel] = ds4_gpu_get_pipeline(qwen4_kernel_names[kernel]);
-                if (!g_qwen4_pipelines[kernel]) return 0;
+                if (!g_qwen4_pipelines[kernel]) {
+                    static int source_skew_note;
+                    if (!source_skew_note) {
+                        source_skew_note = 1;
+                        fprintf(stderr,
+                            "ds4: Qwen3.8 kernel '%s' is absent from the compiled Metal sources.\n"
+                            "ds4: Metal sources are loaded from ./metal at startup, so a binary newer\n"
+                            "ds4: than the working directory's metal/ files (e.g. run from an older\n"
+                            "ds4: checkout) produces this error. Run from the matching checkout, update\n"
+                            "ds4: metal/, or point DS4_METAL_QWEN4_SOURCE at a current qwen4.metal.\n",
+                            qwen4_kernel_names[kernel]);
+                    }
+                    return 0;
+                }
             }
             pipeline = g_qwen4_pipelines[kernel];
         }
