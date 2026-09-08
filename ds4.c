@@ -66892,6 +66892,32 @@ static int ds4_engine_open_internal(ds4_engine **out,
         fprintf(stderr,
                 "ds4: PLE sidecar table: %s (ple.weight [%u, %" PRIu64 "], CPU-only)\n",
                 opt->ple_path, DS4_N_PLE_HEAD_DIM, ple_t->dim[1]);
+        /* Full prefault only with real headroom: the sidecar must fit
+         * beside the resident model plus an OS margin, otherwise demand
+         * paging keeps tight machines (a 64 GB Mac needs ~0.7 GiB for the
+         * gather working set instead of ~10 GiB of pressure-limited
+         * prefaulted pages).  DS4_QWEN4_PLE_PREFETCH_FULL=1/0 overrides. */
+        int prefault_full = -1;
+        const char *prefetch_env = getenv("DS4_QWEN4_PLE_PREFETCH_FULL");
+        if (prefetch_env && prefetch_env[0])
+            prefault_full = strcmp(prefetch_env, "0") != 0;
+        if (prefault_full < 0) {
+            const uint64_t ram_total = glm_graph_host_memory_bytes();
+            if (ram_total == 0) {
+                fprintf(stderr, "ds4: cannot read hw.memsize; PLE prefault disabled\n");
+                prefault_full = 0;
+            } else {
+                const uint64_t margin = 16ull * 1024ull * 1024ull * 1024ull;
+                prefault_full = ram_total >= e->model.size + ple_t->bytes + margin;
+            }
+        }
+        if (prefault_full) {
+            model_prefetch_cpu_mapping(&e->ple_model);
+            fprintf(stderr, "ds4: PLE sidecar resident prefetch enabled (full table)\n");
+        } else {
+            fprintf(stderr, "ds4: PLE sidecar demand-paged (insufficient RAM headroom "
+                            "or DS4_QWEN4_PLE_PREFETCH_FULL=0)\n");
+        }
     }
     weights_bind(&e->weights,
                  &e->model,
