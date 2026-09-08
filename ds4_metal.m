@@ -2615,13 +2615,19 @@ static id<MTLComputePipelineState> ds4_gpu_get_pipeline(
         const char *function_name) {
     NSString *key = [NSString stringWithFormat:@"%s", function_name];
     id<MTLComputePipelineState> cached = [g_pipeline_cache objectForKey:key];
-    if (cached) return cached;
+    if (cached) {
+        /* Failed lookups are remembered as NSNull so the error prints once
+         * per name instead of on every dispatch. */
+        if (cached == (id<MTLComputePipelineState>)[NSNull null]) return nil;
+        return cached;
+    }
 
     NSError *error = nil;
     NSString *name = [NSString stringWithUTF8String:function_name];
     id<MTLFunction> fn = [g_library newFunctionWithName:name];
     if (!fn) {
         fprintf(stderr, "ds4: Metal %s function not found\n", function_name);
+        [g_pipeline_cache setObject:(id<MTLComputePipelineState>)[NSNull null] forKey:key];
         return nil;
     }
 
@@ -2629,6 +2635,7 @@ static id<MTLComputePipelineState> ds4_gpu_get_pipeline(
     if (!pipeline) {
         fprintf(stderr, "ds4: Metal %s pipeline failed: %s\n",
                 function_name, [[error localizedDescription] UTF8String]);
+        [g_pipeline_cache setObject:(id<MTLComputePipelineState>)[NSNull null] forKey:key];
         return nil;
     }
 
@@ -43009,6 +43016,10 @@ int ds4_gpu_routed_moe_batch_tensor(
             !use_iq2_batch_selected_addr &&
             n_tokens >= 32u &&
             ds4_gpu_mul_mm_id_map0_name(n_expert) != NULL;
+        /* True when the routed mm_id encodes below dispatch TensorOps/MPP
+         * pipelines: the double-buffered staging kernels need a larger
+         * threadgroup allocation than the legacy simdgroup tiles. */
+        bool mm_id_mpp_active = false;
         /* Reuse half activations across gate/up and all output tiles. These
          * bounds keep the shared scratch below 256 MiB, independent of context. */
         const bool use_packed_mpp = use_mm_id && !g_quality_mode &&
@@ -43257,11 +43268,37 @@ int ds4_gpu_routed_moe_batch_tensor(
                     if (mpp_mask & 2) up_mm_pipeline = mpp;
                 }
             }
+            /* Q4_K routed gate/up on the TensorOps pipeline: same operand
+             * domains as the simdgroup kernel, different accumulation order.
+             * DS4_METAL_DISABLE_Q4_K_MM_ID_MPP=1 keeps the simdgroup kernels. */
+            static int q4_k_mpp = -1;
+            if (q4_k_mpp < 0)
+                q4_k_mpp = getenv("DS4_METAL_DISABLE_Q4_K_MM_ID_MPP") == NULL;
+            if (mpp_mask && q4_k_mpp && gate_type == DS4_METAL_TENSOR_Q4_K) {
+                id<MTLComputePipelineState> mpp =
+                    ds4_gpu_get_mul_mm_id_pipeline("kernel_mul_mm_id_q4_K_f32_dbuf_mpp", false);
+                if (mpp) {
+                    if (mpp_mask & 1) gate_mm_pipeline = mpp;
+                    if (mpp_mask & 2) up_mm_pipeline = mpp;
+                    mm_id_mpp_active = true;
+                }
+            }
             if ((mpp_mask & 4) && mxfp4_mpp && request_mid_f16 &&
                 down_type == DS4_METAL_TENSOR_MXFP4) {
                 id<MTLComputePipelineState> mpp =
                     ds4_gpu_get_mul_mm_id_pipeline("kernel_mul_mm_id_mxfp4_f16_mpp", false);
-                if (mpp) down_mm_pipeline = mpp;
+                if (mpp) {
+                    down_mm_pipeline = mpp;
+                }
+            }
+            if ((mpp_mask & 4) && q4_k_mpp && request_mid_f16 &&
+                down_type == DS4_METAL_TENSOR_Q4_K) {
+                id<MTLComputePipelineState> mpp =
+                    ds4_gpu_get_mul_mm_id_pipeline("kernel_mul_mm_id_q4_K_f16_dbuf_mpp", false);
+                if (mpp) {
+                    down_mm_pipeline = mpp;
+                    mm_id_mpp_active = true;
+                }
             }
             if ((mpp_mask & 4) && request_mid_f16 &&
                 (down_type == DS4_METAL_TENSOR_Q2_K || down_type == DS4_METAL_TENSOR_IQ2_XXS)) {
@@ -43269,7 +43306,9 @@ int ds4_gpu_routed_moe_batch_tensor(
                     down_type == DS4_METAL_TENSOR_Q2_K ?
                         "kernel_mul_mm_id_q2_K_f16_mpp" :
                         "kernel_mul_mm_id_iq2_xxs_f16_mpp", false);
-                if (mpp) down_mm_pipeline = mpp;
+                if (mpp) {
+                    down_mm_pipeline = mpp;
+                }
             }
             if (use_packed_mpp) {
                 gate_mm_pipeline = up_mm_pipeline =
@@ -43278,6 +43317,7 @@ int ds4_gpu_routed_moe_batch_tensor(
                 down_mm_pipeline = ds4_gpu_get_pipeline(down_type == DS4_METAL_TENSOR_MXFP4 ?
                         "kernel_mul_mm_id_mxfp4_mpp_packed" : "kernel_mul_mm_id_q2_K_mpp_packed");
             }
+            if (use_packed_mpp) mm_id_mpp_active = false;
             if (use_mm_id_pair_swiglu) {
                 /* Exact half-domain block scaling for the resident MXFP4 pair
                  * tile: E8M0 is a power of two and every E2M1 magnitude is
@@ -43718,7 +43758,7 @@ int ds4_gpu_routed_moe_batch_tensor(
                                                            use_packed_mpp ? 0 : ds4_gpu_tensor_offset(x),
                                                            gatebuf,
                                                            ds4_gpu_tensor_offset(gate),
-                                                           8192u,
+                                                           mm_id_mpp_active ? 12288u : 8192u,
                                                            use_iq2_cached_batch ? stream_resources : NULL,
                                                            stream_resource_count, 0, stream_overflow_gate);
                 DS4_METAL_PROFILE_MOE_STAGE("gate");
@@ -43733,7 +43773,7 @@ int ds4_gpu_routed_moe_batch_tensor(
                                                    use_packed_mpp ? 0 : ds4_gpu_tensor_offset(x),
                                                    upbuf,
                                                    ds4_gpu_tensor_offset(up),
-                                                   8192u,
+                                                   mm_id_mpp_active ? 12288u : 8192u,
                                                    use_iq2_cached_batch ? stream_resources : NULL,
                                                    stream_resource_count, 1, stream_overflow_up);
                 DS4_METAL_PROFILE_MOE_STAGE("up");
@@ -44030,7 +44070,7 @@ int ds4_gpu_routed_moe_batch_tensor(
                                                        use_packed_mpp ? 0 : ds4_gpu_tensor_offset(mid),
                                                        down_dst,
                                                        down_dst_off,
-                                                       8192u,
+                                                       mm_id_mpp_active ? 12288u : 8192u,
                                                        use_iq2_cached_batch ? stream_resources : NULL,
                                                        stream_resource_count, 2, stream_overflow_down);
             } else if (use_iq2_cached_batch) {
@@ -47566,10 +47606,10 @@ typedef struct {
 static bool qwen4_moe_mv_specialize(uint32_t type) {
     /* Constant quantization and logical width remove the generic decode
      * branches. Keep the original per-lane reduction order and padded stride.
-     * M3 Ultra measured the low-bit types; M5 measured MXFP4 down rows. */
+     * M3 Ultra uses low-bit and MXFP4 down rows; M5 uses MXFP4 down rows. */
     const int override = ds4_gpu_env_bool("DS4_QWEN4_MOE_MV_SPECIALIZE");
     return override >= 0 ? override != 0 :
-        ((type == 16u || type == 10u) && ds4_gpu_device_name_contains("M3 Ultra")) ||
+        ((type == 16u || type == 10u || type == 39u) && ds4_gpu_device_name_contains("M3 Ultra")) ||
         (type == 39u && ds4_gpu_device_is_m5_apple_silicon());
 }
 
@@ -47578,10 +47618,10 @@ static uint32_t qwen4_moe_mv_rows(void) {
 }
 
 static uint32_t qwen4_moe_mv_groups(uint32_t type) {
-    /* Sixteen SIMD groups per threadgroup measured best for Q2_K on M3 Ultra
-     * and for MXFP4 on M5; each group keeps its own rows and lane order. */
+    /* Q2_K and MXFP4 use sixteen groups on M3 Ultra; MXFP4 also does on M5.
+     * Each group keeps its own rows and unchanged per-lane reduction order. */
     const uint32_t default_nsg =
-        (type == 10u && ds4_gpu_device_name_contains("M3 Ultra")) ||
+        ((type == 10u || type == 39u) && ds4_gpu_device_name_contains("M3 Ultra")) ||
         (type == 39u && ds4_gpu_device_is_m5_apple_silicon()) ? 16u : 8u;
     return (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_MOE_MV_NSG", default_nsg, 1u, 16u);
 }
@@ -47648,7 +47688,20 @@ static int qwen4_dispatch(int kernel, const void *args, size_t args_len,
         } else {
             if (!g_qwen4_pipelines[kernel]) {
                 g_qwen4_pipelines[kernel] = ds4_gpu_get_pipeline(qwen4_kernel_names[kernel]);
-                if (!g_qwen4_pipelines[kernel]) return 0;
+                if (!g_qwen4_pipelines[kernel]) {
+                    static int source_skew_note;
+                    if (!source_skew_note) {
+                        source_skew_note = 1;
+                        fprintf(stderr,
+                            "ds4: Qwen3.8 kernel '%s' is absent from the compiled Metal sources.\n"
+                            "ds4: Metal sources are loaded from ./metal at startup, so a binary newer\n"
+                            "ds4: than the working directory's metal/ files (e.g. run from an older\n"
+                            "ds4: checkout) produces this error. Run from the matching checkout, update\n"
+                            "ds4: metal/, or point DS4_METAL_QWEN4_SOURCE at a current qwen4.metal.\n",
+                            qwen4_kernel_names[kernel]);
+                    }
+                    return 0;
+                }
             }
             pipeline = g_qwen4_pipelines[kernel];
         }
@@ -48186,7 +48239,11 @@ int ds4_gpu_qwen4_idx_select_tensor(
      * over the surviving tiles in threadgroup memory (exact; see the kernel).
      * The scorer that emits tile maxima only runs for decode batches. */
     const int pre_override = ds4_gpu_env_bool("DS4_QWEN4_IDX_PREFILTER");
-    const bool pre = tile_max && n_blocks > 8u * top_k &&
+    /* Scalar/MM scorers do not populate tile maxima. An independent
+     * scorer override must also disable their consumer. */
+    const int vec_override = ds4_gpu_env_bool("DS4_QWEN4_IDX_SCORE_VEC");
+    const bool vec = vec_override >= 0 ? vec_override != 0 : ds4_gpu_device_is_m5_apple_silicon();
+    const bool pre = tile_max && vec && n_tokens <= 2u && n_blocks > 8u * top_k &&
         (pre_override >= 0 ? pre_override != 0 : ds4_gpu_device_is_m5_apple_silicon());
     if (pre) {
         if (!qwen4_bind_tensor(&b[1], tile_max, (uint64_t)n_tokens * ((n_blocks + 7u) / 8u) * sizeof(uint32_t),

@@ -391,7 +391,7 @@ static float normalized_u8(uint8_t value) {
 }
 
 static void test_qwen4_image_preprocess(void) {
-    enum { SIDE = 32, PATCH_VALUES = 3 * 2 * 16 * 16 };
+    enum { SIDE = 32, PATCH_VALUES = 3 * 16 * 16 };
     ds4_image image = {
         .width = SIDE,
         .height = SIDE,
@@ -411,7 +411,7 @@ static void test_qwen4_image_preprocess(void) {
     ds4_image_patches patches;
     char error[128];
     CHECK(ds4_image_preprocess_qwen4(
-        &patches, &image, SIDE * SIDE, SIDE * SIDE,
+        &patches, &image, 1, 1, /* token bounds: one 32 x 32 merged patch */
         error, sizeof(error)));
     CHECK(patches.content_width == SIDE && patches.content_height == SIDE);
     CHECK(patches.padded_width == SIDE && patches.padded_height == SIDE);
@@ -424,11 +424,11 @@ static void test_qwen4_image_preprocess(void) {
         const float *p3 = patches.patches + 3 * PATCH_VALUES;
         CHECK(fabsf(p0[0] - normalized_u8(0)) < 1e-7f);
         CHECK(fabsf(p0[15] - normalized_u8(15)) < 1e-7f);
-        CHECK(fabsf(p0[16 * 16] - p0[0]) < 1e-7f);
+        CHECK(fabsf(p0[16 * 16] - normalized_u8(0)) < 1e-7f);
         CHECK(fabsf(p0[2 * 16 * 16] - normalized_u8(0)) < 1e-7f);
         CHECK(fabsf(p1[0] - normalized_u8(16)) < 1e-7f);
-        CHECK(fabsf(p2[2 * 16 * 16] - normalized_u8(16)) < 1e-7f);
-        CHECK(fabsf(p3[4 * 16 * 16] - normalized_u8(32)) < 1e-7f);
+        CHECK(fabsf(p2[16 * 16] - normalized_u8(16)) < 1e-7f);
+        CHECK(fabsf(p3[2 * 16 * 16] - normalized_u8(32)) < 1e-7f);
     }
     ds4_image_patches_free(&patches);
     free(image.rgb);

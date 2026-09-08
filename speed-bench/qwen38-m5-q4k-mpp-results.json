@@ -1,0 +1,50 @@
+{
+  "machine": "Apple M5 Max, 137 GB, Metal 4 tensor API",
+  "date": "2026-09-08",
+  "models": {
+    "q2": "Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+    "q4": "Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf"
+  },
+  "command": "./ds4-bench --metal --ple Qwen3.8-Flash-Next-PLE-Q4_1.gguf --prompt-file tests/long_context_security_prompt.txt --ctx-start 16384 --ctx-max 16384 --gen-tokens 128 --prefill-chunk 4096",
+  "change": {
+    "kernel": "kernel_mul_mm_id_mpp_dbuf (double-buffered staging, one barrier per k-step)",
+    "selected_for": ["Q4_K gate/up f32 RHS", "Q4_K down f16 RHS"],
+    "threadgroup_bytes": {"mpp_dbuf": 12288, "other": 8192},
+    "kill_switch": "DS4_METAL_DISABLE_Q4_K_MM_ID_MPP=1",
+    "unaffected": ["iq2_xxs_f32_mpp", "q2_K_f16_mpp", "mxfp4_f32/f16_mpp", "iq2_xxs cached mpp"]
+  },
+  "q4_pairs_warm": [
+    {"mpp": 1024.39, "simdgroup": 965.88, "delta_pct": 6.06},
+    {"mpp": 964.13, "simdgroup": 927.36, "delta_pct": 3.96},
+    {"mpp": 962.81, "simdgroup": 925.05, "delta_pct": 4.09},
+    {"mpp": 889.15, "simdgroup": 869.40, "delta_pct": 2.27},
+    {"mpp": 1034.90, "simdgroup": 1057.07, "delta_pct": -2.10, "note": "excluded: simdgroup leg followed unsettled pages; reported for completeness"}
+  ],
+  "q4_mean_delta_pct_warm": 3.8,
+  "isolation_single_buffer_q4_mpp_pairs": [
+    {"mpp": 870.89, "simdgroup": 926.20},
+    {"mpp": 922.31, "simdgroup": 917.68},
+    {"mpp": 885.83, "simdgroup": 861.71}
+  ],
+  "isolation_conclusion": "Q4_K MPP on the original single-buffered kernel is neutral (mean -0.9%); double-buffered staging is the active ingredient",
+  "q2_pairs_warm": [
+    {"final": 862.00, "old": 857.17, "delta_pct": 0.56},
+    {"final": 857.94, "old": 856.19, "delta_pct": 0.20}
+  ],
+  "chunk_width_prefill_tps": {
+    "1024": {"q2": [789.81, 488.19], "q4": [466.24, 444.61]},
+    "4096": {"q2": [1025.12, 995.28], "q4": [970.06, 1004.63]},
+    "8192": {"q2": [1059.22, 1069.19], "q4": [535.25, 538.73]}
+  },
+  "contamination_notes": [
+    "First run after a model switch pays cold weight paging (~40% prefill penalty at 65 GiB); alternating models inside a pair is invalid",
+    "Run order tracks heat soak (~10% across a session); only adjacent same-model pairs are comparable"
+  ],
+  "decode": "unchanged by construction (M=1 paths untouched); MPP at n_tok=1 is a previously measured dead end (see ds4_gpu_matmul_quant_decode_mpp_model_view_tensor comment)",
+  "verification": [
+    "make -j8 ds4 ds4-bench",
+    "./tests/test_qwen4_kernels: all qwen4 kernel tests passed",
+    "make test-qwen4-q2: 132 PASS lines",
+    "greedy smoke correct on both models"
+  ]
+}

@@ -1253,7 +1253,6 @@ static void test_idx_prefilter(void) {
             require_ok(ds4_gpu_qwen4_idx_score_tensor(gs0, NULL, gq, gk, T, n, Hi, Di, pos0, ratio), "scalar score");
             setenv("DS4_QWEN4_IDX_SCORE_VEC", "1", 1);
             require_ok(ds4_gpu_qwen4_idx_score_tensor(gs1, gtm, gq, gk, T, n, Hi, Di, pos0, ratio), "vector score");
-            unsetenv("DS4_QWEN4_IDX_SCORE_VEC");
             float *s0 = download(gs0, (uint64_t)T * n), *s1 = download(gs1, (uint64_t)T * n);
             require_ok(memcmp(s0, s1, (uint64_t)T * n * 4) == 0, "vector scorer matches the scalar scorer");
             uint32_t *tm = malloc((uint64_t)T * n_tiles * 4);
@@ -1305,9 +1304,23 @@ static void test_idx_prefilter(void) {
                 require_ok(ds4_gpu_tensor_read(gfull, 0, full, (uint64_t)T * k * 4) &&
                            ds4_gpu_tensor_read(gpre, 0, pre, (uint64_t)T * k * 4), "select read");
                 require_ok(memcmp(full, pre, (uint64_t)T * k * 4) == 0, "prefiltered select matches the full select");
+                /* A scalar-scorer override leaves tile maxima stale. Poison
+                 * them and require the full selector fallback to remain exact. */
+                setenv("DS4_QWEN4_IDX_SCORE_VEC", "0", 1);
+                setenv("DS4_QWEN4_IDX_PREFILTER", "1", 1);
+                memset(tm, 0, (uint64_t)T * n_tiles * 4);
+                for (uint32_t t = 0; t < T; t++)
+                    for (uint32_t tile = 0; tile < k; tile++) tm[(uint64_t)t * n_tiles + tile] = 0x7f7fffffu;
+                require_ok(ds4_gpu_tensor_write(gtm, 0, tm, (uint64_t)T * n_tiles * 4), "stale tiles upload");
+                require_ok(ds4_gpu_qwen4_idx_select_tensor(gpre, gs1, gtm, n, T, k) &&
+                           ds4_gpu_tensor_read(gpre, 0, pre, (uint64_t)T * k * 4), "scalar scorer fallback");
+                require_ok(memcmp(full, pre, (uint64_t)T * k * 4) == 0, "scalar override ignores stale tile maxima");
+                setenv("DS4_QWEN4_IDX_SCORE_VEC", "1", 1);
+                unsetenv("DS4_QWEN4_IDX_PREFILTER");
                 free(full); free(pre);
                 ds4_gpu_tensor_free(gfull); ds4_gpu_tensor_free(gpre);
             }
+            unsetenv("DS4_QWEN4_IDX_SCORE_VEC");
             printf("  idx prefilter n=%u T=%u: vector scores, tile keys and selections byte-exact\n", n, T);
             free(q); free(keyf); free(keyh); free(s0); free(s1); free(tm);
             ds4_gpu_tensor_free(gq); ds4_gpu_tensor_free(gk); ds4_gpu_tensor_free(gs0); ds4_gpu_tensor_free(gs1); ds4_gpu_tensor_free(gtm);

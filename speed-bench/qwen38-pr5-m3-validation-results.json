@@ -1,0 +1,2284 @@
+{
+  "base_revision": "881c678d1afd581b3668b199321c5195a538cca2",
+  "pr_head": "315cdfaf11af1d622439b90b8251bc79b6a1282b",
+  "hardware": "Apple M3 Ultra, 512 GiB, Metal",
+  "models": {
+    "q4": {
+      "parity": {
+        "model": "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+        "configs": {
+          "baseline": {
+            "binary_sha256": "8d7b53cd6d7847e427794e5ae88bbb585d47464b055ceec0f6ad6920ea68b5f0",
+            "source_sha256": "e9a4bd359af48d12d3213f4d8ef10478dcd7e6828bf6d5eb1e70ac5a200b8da7"
+          },
+          "candidate": {
+            "binary_sha256": "2827e895da62b9a7c553ce6dac25d68077577d5e185dda74076acd8afb5858df",
+            "source_sha256": "051d4dbc6f8c6d1bfcf4dbaa57aefe133dee4e68f7c60ddf52d00419050249ba"
+          }
+        },
+        "checks": [
+          {
+            "prompt_tokens": 1,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "f1c18decc28238c009562621ac0519d8b583209f66f20d8b78a3cac3dc9c3ab9",
+              "f1c18decc28238c009562621ac0519d8b583209f66f20d8b78a3cac3dc9c3ab9"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 2,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "eacdf1c9a7c0b88c99e8490dc11895dd1b607ec575b491d4304a9c734758d747",
+              "eacdf1c9a7c0b88c99e8490dc11895dd1b607ec575b491d4304a9c734758d747"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 8,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "cca091531515a2d2b82ef2a3a690e76078176ec77d2f73c22438dd2f71d21858",
+              "cca091531515a2d2b82ef2a3a690e76078176ec77d2f73c22438dd2f71d21858"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 9,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "914fb74996cdf32c3c54b6c0baaaaf713af77f8ad8a6851d9f2b5337177f1062",
+              "914fb74996cdf32c3c54b6c0baaaaf713af77f8ad8a6851d9f2b5337177f1062"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 39,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "b27e33a12d32cbdcc16e3f1622cbeaf50198df7ddb5aab2469a712a4bd9dd140",
+              "b27e33a12d32cbdcc16e3f1622cbeaf50198df7ddb5aab2469a712a4bd9dd140"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 128,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "dc92f339f4b5ea86b2b6a68d263ef4ea89cdb8daa208e7336d3ee37249f54e28",
+              "dc92f339f4b5ea86b2b6a68d263ef4ea89cdb8daa208e7336d3ee37249f54e28"
+            ],
+            "exact": true,
+            "finite": true
+          }
+        ]
+      },
+      "mtp": {
+        "summary": {
+          "hamlet": {
+            "median_tps": {
+              "baseline": 63.870000000000005,
+              "candidate": 64.455
+            },
+            "prefill_median_tps": {
+              "baseline": 133.95,
+              "candidate": 137.65499999999997
+            },
+            "range_tps": {
+              "baseline": [
+                63.86,
+                63.88
+              ],
+              "candidate": [
+                64.35,
+                64.56
+              ]
+            },
+            "speedup": 1.0091592296852983,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          },
+          "fibonacci": {
+            "median_tps": {
+              "baseline": 77.685,
+              "candidate": 77.775
+            },
+            "prefill_median_tps": {
+              "baseline": 127.23,
+              "candidate": 131.39499999999998
+            },
+            "range_tps": {
+              "baseline": [
+                77.68,
+                77.69
+              ],
+              "candidate": [
+                77.74,
+                77.81
+              ]
+            },
+            "speedup": 1.0011585248117398,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          },
+          "explanation": {
+            "median_tps": {
+              "baseline": 68.64500000000001,
+              "candidate": 68.96000000000001
+            },
+            "prefill_median_tps": {
+              "baseline": 168.35500000000002,
+              "candidate": 172.685
+            },
+            "range_tps": {
+              "baseline": [
+                68.59,
+                68.7
+              ],
+              "candidate": [
+                68.78,
+                69.14
+              ]
+            },
+            "speedup": 1.004588826571491,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          }
+        },
+        "records": [
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": -1,
+            "warmup": true,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 133.3,
+            "decode_tps": 63.79,
+            "cycles": 56,
+            "accepted": 37,
+            "wall_s": 6.310823749983683,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": -1,
+            "warmup": true,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 138.04,
+            "decode_tps": 64.61,
+            "cycles": 56,
+            "accepted": 37,
+            "wall_s": 6.36896491702646,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 133.99,
+            "decode_tps": 63.86,
+            "cycles": 56,
+            "accepted": 37,
+            "wall_s": 6.358613833086565,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 137.89,
+            "decode_tps": 64.56,
+            "cycles": 56,
+            "accepted": 37,
+            "wall_s": 6.3656076670158654,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "baseline",
+            "case": "fibonacci",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 127.28,
+            "decode_tps": 77.68,
+            "cycles": 201,
+            "accepted": 198,
+            "wall_s": 10.048696083016694,
+            "output_sha256": "10a592df12556e0be8696c72527fcca7a79dde1d676b6a8753004e6e82945954"
+          },
+          {
+            "config": "candidate",
+            "case": "fibonacci",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 131.19,
+            "decode_tps": 77.81,
+            "cycles": 201,
+            "accepted": 198,
+            "wall_s": 9.951613458921202,
+            "output_sha256": "10a592df12556e0be8696c72527fcca7a79dde1d676b6a8753004e6e82945954"
+          },
+          {
+            "config": "baseline",
+            "case": "explanation",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 167.75,
+            "decode_tps": 68.7,
+            "cycles": 144,
+            "accepted": 110,
+            "wall_s": 8.595640041050501,
+            "output_sha256": "3e24cf4106eba2c5e501a6987e719a5e98756a6c43aaf620f89592db7c7154fc"
+          },
+          {
+            "config": "candidate",
+            "case": "explanation",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 172.46,
+            "decode_tps": 69.14,
+            "cycles": 144,
+            "accepted": 110,
+            "wall_s": 8.644747458980419,
+            "output_sha256": "3e24cf4106eba2c5e501a6987e719a5e98756a6c43aaf620f89592db7c7154fc"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 137.42,
+            "decode_tps": 64.35,
+            "cycles": 56,
+            "accepted": 37,
+            "wall_s": 3.8923452500021085,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 133.91,
+            "decode_tps": 63.88,
+            "cycles": 56,
+            "accepted": 37,
+            "wall_s": 6.301012541982345,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "candidate",
+            "case": "fibonacci",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 131.6,
+            "decode_tps": 77.74,
+            "cycles": 201,
+            "accepted": 198,
+            "wall_s": 10.032842250075191,
+            "output_sha256": "10a592df12556e0be8696c72527fcca7a79dde1d676b6a8753004e6e82945954"
+          },
+          {
+            "config": "baseline",
+            "case": "fibonacci",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 127.18,
+            "decode_tps": 77.69,
+            "cycles": 201,
+            "accepted": 198,
+            "wall_s": 10.04627883399371,
+            "output_sha256": "10a592df12556e0be8696c72527fcca7a79dde1d676b6a8753004e6e82945954"
+          },
+          {
+            "config": "candidate",
+            "case": "explanation",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 172.91,
+            "decode_tps": 68.78,
+            "cycles": 144,
+            "accepted": 110,
+            "wall_s": 8.663937416044064,
+            "output_sha256": "3e24cf4106eba2c5e501a6987e719a5e98756a6c43aaf620f89592db7c7154fc"
+          },
+          {
+            "config": "baseline",
+            "case": "explanation",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 168.96,
+            "decode_tps": 68.59,
+            "cycles": 144,
+            "accepted": 110,
+            "wall_s": 8.579238292062655,
+            "output_sha256": "3e24cf4106eba2c5e501a6987e719a5e98756a6c43aaf620f89592db7c7154fc"
+          }
+        ],
+        "configs": {
+          "baseline": {
+            "binary": "/Users/ifioravanti/github/ds4/ds4",
+            "binary_sha256": "8d7b53cd6d7847e427794e5ae88bbb585d47464b055ceec0f6ad6920ea68b5f0",
+            "source": "/Users/ifioravanti/github/ds4/metal/qwen4.metal",
+            "source_sha256": "e9a4bd359af48d12d3213f4d8ef10478dcd7e6828bf6d5eb1e70ac5a200b8da7",
+            "moe_source": "/Users/ifioravanti/github/ds4/metal/moe.metal",
+            "moe_source_sha256": "b037335c03b230f5f85c0c47463a8f02ebb6269db1bb26d4beeb586f163cfd3c"
+          },
+          "candidate": {
+            "binary": "/Users/ifioravanti/github/ds4-pr5/ds4",
+            "binary_sha256": "2827e895da62b9a7c553ce6dac25d68077577d5e185dda74076acd8afb5858df",
+            "source": "/Users/ifioravanti/github/ds4-pr5/metal/qwen4.metal",
+            "source_sha256": "051d4dbc6f8c6d1bfcf4dbaa57aefe133dee4e68f7c60ddf52d00419050249ba",
+            "moe_source": "/Users/ifioravanti/github/ds4-pr5/metal/moe.metal",
+            "moe_source_sha256": "b037335c03b230f5f85c0c47463a8f02ebb6269db1bb26d4beeb586f163cfd3c"
+          }
+        }
+      },
+      "plain": {
+        "summary": {
+          "hamlet": {
+            "median_tps": {
+              "baseline": 54.05,
+              "candidate": 53.97
+            },
+            "prefill_median_tps": {
+              "baseline": 133.95,
+              "candidate": 138.075
+            },
+            "range_tps": {
+              "baseline": [
+                54.01,
+                54.09
+              ],
+              "candidate": [
+                53.97,
+                53.97
+              ]
+            },
+            "speedup": 0.9985198889916744,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          },
+          "fibonacci": {
+            "median_tps": {
+              "baseline": 54.0,
+              "candidate": 53.865
+            },
+            "prefill_median_tps": {
+              "baseline": 127.61,
+              "candidate": 131.73000000000002
+            },
+            "range_tps": {
+              "baseline": [
+                53.96,
+                54.04
+              ],
+              "candidate": [
+                53.85,
+                53.88
+              ]
+            },
+            "speedup": 0.9975,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          },
+          "explanation": {
+            "median_tps": {
+              "baseline": 54.095,
+              "candidate": 53.91
+            },
+            "prefill_median_tps": {
+              "baseline": 169.06,
+              "candidate": 173.685
+            },
+            "range_tps": {
+              "baseline": [
+                54.03,
+                54.16
+              ],
+              "candidate": [
+                53.9,
+                53.92
+              ]
+            },
+            "speedup": 0.9965800905813845,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          }
+        },
+        "records": [
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": -1,
+            "warmup": true,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 137.82,
+            "decode_tps": 53.32,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 4.133893624995835,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": -1,
+            "warmup": true,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 138.04,
+            "decode_tps": 54.01,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 6.6312682499410585,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 133.82,
+            "decode_tps": 54.09,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 6.591909916955046,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 138.6,
+            "decode_tps": 53.97,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 6.5915852499892935,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "baseline",
+            "case": "fibonacci",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 126.91,
+            "decode_tps": 54.04,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 12.235594082972966,
+            "output_sha256": "10a592df12556e0be8696c72527fcca7a79dde1d676b6a8753004e6e82945954"
+          },
+          {
+            "config": "candidate",
+            "case": "fibonacci",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 131.87,
+            "decode_tps": 53.88,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 12.355890124919824,
+            "output_sha256": "10a592df12556e0be8696c72527fcca7a79dde1d676b6a8753004e6e82945954"
+          },
+          {
+            "config": "baseline",
+            "case": "explanation",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 169.59,
+            "decode_tps": 54.16,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 9.638019209029153,
+            "output_sha256": "3e24cf4106eba2c5e501a6987e719a5e98756a6c43aaf620f89592db7c7154fc"
+          },
+          {
+            "config": "candidate",
+            "case": "explanation",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 173.53,
+            "decode_tps": 53.9,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 9.641246458049864,
+            "output_sha256": "3e24cf4106eba2c5e501a6987e719a5e98756a6c43aaf620f89592db7c7154fc"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 137.55,
+            "decode_tps": 53.97,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 4.13884554093238,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 134.08,
+            "decode_tps": 54.01,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 6.591938125086017,
+            "output_sha256": "d11f9ce3df9ff2e1ea9a0c520403a453e97e2f32421d1196de26377b865da0b7"
+          },
+          {
+            "config": "candidate",
+            "case": "fibonacci",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 131.59,
+            "decode_tps": 53.85,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 12.337088791071437,
+            "output_sha256": "10a592df12556e0be8696c72527fcca7a79dde1d676b6a8753004e6e82945954"
+          },
+          {
+            "config": "baseline",
+            "case": "fibonacci",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 128.31,
+            "decode_tps": 53.96,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 12.221927540958859,
+            "output_sha256": "10a592df12556e0be8696c72527fcca7a79dde1d676b6a8753004e6e82945954"
+          },
+          {
+            "config": "candidate",
+            "case": "explanation",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 173.84,
+            "decode_tps": 53.92,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 9.695727915968746,
+            "output_sha256": "3e24cf4106eba2c5e501a6987e719a5e98756a6c43aaf620f89592db7c7154fc"
+          },
+          {
+            "config": "baseline",
+            "case": "explanation",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-Q4KImatrix-MTP-qwen4exp-pleext.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 168.53,
+            "decode_tps": 54.03,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 9.654217709088698,
+            "output_sha256": "3e24cf4106eba2c5e501a6987e719a5e98756a6c43aaf620f89592db7c7154fc"
+          }
+        ],
+        "configs": {
+          "baseline": {
+            "binary": "/Users/ifioravanti/github/ds4/ds4",
+            "binary_sha256": "8d7b53cd6d7847e427794e5ae88bbb585d47464b055ceec0f6ad6920ea68b5f0",
+            "source": "/Users/ifioravanti/github/ds4/metal/qwen4.metal",
+            "source_sha256": "e9a4bd359af48d12d3213f4d8ef10478dcd7e6828bf6d5eb1e70ac5a200b8da7",
+            "moe_source": "/Users/ifioravanti/github/ds4/metal/moe.metal",
+            "moe_source_sha256": "b037335c03b230f5f85c0c47463a8f02ebb6269db1bb26d4beeb586f163cfd3c"
+          },
+          "candidate": {
+            "binary": "/Users/ifioravanti/github/ds4-pr5/ds4",
+            "binary_sha256": "2827e895da62b9a7c553ce6dac25d68077577d5e185dda74076acd8afb5858df",
+            "source": "/Users/ifioravanti/github/ds4-pr5/metal/qwen4.metal",
+            "source_sha256": "051d4dbc6f8c6d1bfcf4dbaa57aefe133dee4e68f7c60ddf52d00419050249ba",
+            "moe_source": "/Users/ifioravanti/github/ds4-pr5/metal/moe.metal",
+            "moe_source_sha256": "b037335c03b230f5f85c0c47463a8f02ebb6269db1bb26d4beeb586f163cfd3c"
+          }
+        }
+      }
+    },
+    "q2": {
+      "parity": {
+        "model": "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        "configs": {
+          "baseline": {
+            "binary_sha256": "8d7b53cd6d7847e427794e5ae88bbb585d47464b055ceec0f6ad6920ea68b5f0",
+            "source_sha256": "e9a4bd359af48d12d3213f4d8ef10478dcd7e6828bf6d5eb1e70ac5a200b8da7"
+          },
+          "candidate": {
+            "binary_sha256": "2827e895da62b9a7c553ce6dac25d68077577d5e185dda74076acd8afb5858df",
+            "source_sha256": "051d4dbc6f8c6d1bfcf4dbaa57aefe133dee4e68f7c60ddf52d00419050249ba"
+          }
+        },
+        "checks": [
+          {
+            "prompt_tokens": 1,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "c7b339fd9d4df2a477cd789db47481d9f60e6875a070f44aa838c1e09ca433f2",
+              "c7b339fd9d4df2a477cd789db47481d9f60e6875a070f44aa838c1e09ca433f2"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 2,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "c53781bff4f72882b9ca5b06b9f79502e25e8d6fa9a157bf248a2ec8fcc6eefa",
+              "c53781bff4f72882b9ca5b06b9f79502e25e8d6fa9a157bf248a2ec8fcc6eefa"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 8,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "d4f249d081a68565055319e3631b67f4fc3d02700e9b8010283ab33f0c7f29d1",
+              "d4f249d081a68565055319e3631b67f4fc3d02700e9b8010283ab33f0c7f29d1"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 9,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "8933e4c85326ea93f38dfac989e9e6cd89e809cab4bec7475470218d44e0accd",
+              "8933e4c85326ea93f38dfac989e9e6cd89e809cab4bec7475470218d44e0accd"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 39,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "45c62d54d7be6d707662ed61bab66278581d42d4df415b48ecc81992b288697d",
+              "45c62d54d7be6d707662ed61bab66278581d42d4df415b48ecc81992b288697d"
+            ],
+            "exact": true,
+            "finite": true
+          },
+          {
+            "prompt_tokens": 128,
+            "logit_vectors": 32,
+            "bytes": 31784960,
+            "sha256": [
+              "da4d1ae00eebc4796eaf4a9dd9819b59852a54c8604051aa977106b4f5d3e270",
+              "da4d1ae00eebc4796eaf4a9dd9819b59852a54c8604051aa977106b4f5d3e270"
+            ],
+            "exact": true,
+            "finite": true
+          }
+        ]
+      },
+      "mtp": {
+        "summary": {
+          "hamlet": {
+            "median_tps": {
+              "baseline": 64.36,
+              "candidate": 65.065
+            },
+            "prefill_median_tps": {
+              "baseline": 163.76,
+              "candidate": 169.305
+            },
+            "range_tps": {
+              "baseline": [
+                64.35,
+                64.37
+              ],
+              "candidate": [
+                65.02,
+                65.11
+              ]
+            },
+            "speedup": 1.0109540087010565,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          },
+          "fibonacci": {
+            "median_tps": {
+              "baseline": 79.06,
+              "candidate": 79.105
+            },
+            "prefill_median_tps": {
+              "baseline": 155.70999999999998,
+              "candidate": 161.805
+            },
+            "range_tps": {
+              "baseline": [
+                79.02,
+                79.1
+              ],
+              "candidate": [
+                79.06,
+                79.15
+              ]
+            },
+            "speedup": 1.0005691879585126,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          },
+          "explanation": {
+            "median_tps": {
+              "baseline": 68.27000000000001,
+              "candidate": 68.735
+            },
+            "prefill_median_tps": {
+              "baseline": 214.675,
+              "candidate": 218.61
+            },
+            "range_tps": {
+              "baseline": [
+                68.26,
+                68.28
+              ],
+              "candidate": [
+                68.69,
+                68.78
+              ]
+            },
+            "speedup": 1.0068111908598212,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          }
+        },
+        "records": [
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": -1,
+            "warmup": true,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 164.74,
+            "decode_tps": 64.28,
+            "cycles": 71,
+            "accepted": 44,
+            "wall_s": 6.292800333001651,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": -1,
+            "warmup": true,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 169.42,
+            "decode_tps": 65.1,
+            "cycles": 71,
+            "accepted": 44,
+            "wall_s": 6.2702283329563215,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 162.74,
+            "decode_tps": 64.35,
+            "cycles": 71,
+            "accepted": 44,
+            "wall_s": 6.2592722499975935,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 169.35,
+            "decode_tps": 65.02,
+            "cycles": 71,
+            "accepted": 44,
+            "wall_s": 6.312209083000198,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "baseline",
+            "case": "fibonacci",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 156.22,
+            "decode_tps": 79.1,
+            "cycles": 201,
+            "accepted": 197,
+            "wall_s": 9.553825542097911,
+            "output_sha256": "5eb6552c4a94b43714d145c923104fbf0018a87f999ae5aee860b06f522885c7"
+          },
+          {
+            "config": "candidate",
+            "case": "fibonacci",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 161.66,
+            "decode_tps": 79.06,
+            "cycles": 201,
+            "accepted": 197,
+            "wall_s": 9.574425249942578,
+            "output_sha256": "5eb6552c4a94b43714d145c923104fbf0018a87f999ae5aee860b06f522885c7"
+          },
+          {
+            "config": "baseline",
+            "case": "explanation",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 214.59,
+            "decode_tps": 68.28,
+            "cycles": 148,
+            "accepted": 106,
+            "wall_s": 8.23346570902504,
+            "output_sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63"
+          },
+          {
+            "config": "candidate",
+            "case": "explanation",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 221.31,
+            "decode_tps": 68.78,
+            "cycles": 148,
+            "accepted": 106,
+            "wall_s": 8.266270083957352,
+            "output_sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 169.26,
+            "decode_tps": 65.11,
+            "cycles": 71,
+            "accepted": 44,
+            "wall_s": 3.854327959008515,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 164.78,
+            "decode_tps": 64.37,
+            "cycles": 71,
+            "accepted": 44,
+            "wall_s": 6.285770207992755,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "candidate",
+            "case": "fibonacci",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 161.95,
+            "decode_tps": 79.15,
+            "cycles": 201,
+            "accepted": 197,
+            "wall_s": 9.550513042020611,
+            "output_sha256": "5eb6552c4a94b43714d145c923104fbf0018a87f999ae5aee860b06f522885c7"
+          },
+          {
+            "config": "baseline",
+            "case": "fibonacci",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 155.2,
+            "decode_tps": 79.02,
+            "cycles": 201,
+            "accepted": 197,
+            "wall_s": 9.571590709034353,
+            "output_sha256": "5eb6552c4a94b43714d145c923104fbf0018a87f999ae5aee860b06f522885c7"
+          },
+          {
+            "config": "candidate",
+            "case": "explanation",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 215.91,
+            "decode_tps": 68.69,
+            "cycles": 148,
+            "accepted": 106,
+            "wall_s": 8.307287208037451,
+            "output_sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63"
+          },
+          {
+            "config": "baseline",
+            "case": "explanation",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "--mtp",
+              "--mtp-timing",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 214.76,
+            "decode_tps": 68.26,
+            "cycles": 148,
+            "accepted": 106,
+            "wall_s": 8.231860624975525,
+            "output_sha256": "3788f3029e4292d4f397b98c373b3e880c211436c8001f5202221f9e22b2bc63"
+          }
+        ],
+        "configs": {
+          "baseline": {
+            "binary": "/Users/ifioravanti/github/ds4/ds4",
+            "binary_sha256": "8d7b53cd6d7847e427794e5ae88bbb585d47464b055ceec0f6ad6920ea68b5f0",
+            "source": "/Users/ifioravanti/github/ds4/metal/qwen4.metal",
+            "source_sha256": "e9a4bd359af48d12d3213f4d8ef10478dcd7e6828bf6d5eb1e70ac5a200b8da7",
+            "moe_source": "/Users/ifioravanti/github/ds4/metal/moe.metal",
+            "moe_source_sha256": "b037335c03b230f5f85c0c47463a8f02ebb6269db1bb26d4beeb586f163cfd3c"
+          },
+          "candidate": {
+            "binary": "/Users/ifioravanti/github/ds4-pr5/ds4",
+            "binary_sha256": "2827e895da62b9a7c553ce6dac25d68077577d5e185dda74076acd8afb5858df",
+            "source": "/Users/ifioravanti/github/ds4-pr5/metal/qwen4.metal",
+            "source_sha256": "051d4dbc6f8c6d1bfcf4dbaa57aefe133dee4e68f7c60ddf52d00419050249ba",
+            "moe_source": "/Users/ifioravanti/github/ds4-pr5/metal/moe.metal",
+            "moe_source_sha256": "b037335c03b230f5f85c0c47463a8f02ebb6269db1bb26d4beeb586f163cfd3c"
+          }
+        }
+      },
+      "plain": {
+        "summary": {
+          "hamlet": {
+            "median_tps": {
+              "baseline": 54.86,
+              "candidate": 54.709999999999994
+            },
+            "prefill_median_tps": {
+              "baseline": 166.125,
+              "candidate": 170.69
+            },
+            "range_tps": {
+              "baseline": [
+                54.77,
+                54.95
+              ],
+              "candidate": [
+                54.69,
+                54.73
+              ]
+            },
+            "speedup": 0.9972657674079474,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          },
+          "fibonacci": {
+            "median_tps": {
+              "baseline": 54.78,
+              "candidate": 54.730000000000004
+            },
+            "prefill_median_tps": {
+              "baseline": 156.255,
+              "candidate": 162.72
+            },
+            "range_tps": {
+              "baseline": [
+                54.75,
+                54.81
+              ],
+              "candidate": [
+                54.7,
+                54.76
+              ]
+            },
+            "speedup": 0.9990872581234027,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          },
+          "explanation": {
+            "median_tps": {
+              "baseline": 54.925,
+              "candidate": 54.915
+            },
+            "prefill_median_tps": {
+              "baseline": 215.105,
+              "candidate": 223.025
+            },
+            "range_tps": {
+              "baseline": [
+                54.9,
+                54.95
+              ],
+              "candidate": [
+                54.91,
+                54.92
+              ]
+            },
+            "speedup": 0.9998179335457442,
+            "all_outputs_identical": true,
+            "acceptance_identical": true
+          }
+        },
+        "records": [
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": -1,
+            "warmup": true,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 171.43,
+            "decode_tps": 55.02,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 4.114007916999981,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": -1,
+            "warmup": true,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 171.07,
+            "decode_tps": 54.85,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 6.60555395798292,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 165.3,
+            "decode_tps": 54.95,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 6.581146709038876,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 170.32,
+            "decode_tps": 54.69,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 6.6573217920959,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "baseline",
+            "case": "fibonacci",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 157.74,
+            "decode_tps": 54.81,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 11.742296208045445,
+            "output_sha256": "5eb6552c4a94b43714d145c923104fbf0018a87f999ae5aee860b06f522885c7"
+          },
+          {
+            "config": "candidate",
+            "case": "fibonacci",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 162.37,
+            "decode_tps": 54.7,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 11.789540875004604,
+            "output_sha256": "5eb6552c4a94b43714d145c923104fbf0018a87f999ae5aee860b06f522885c7"
+          },
+          {
+            "config": "baseline",
+            "case": "explanation",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 214.73,
+            "decode_tps": 54.95,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 9.140987957944162,
+            "output_sha256": "be97a5d94a6a828268d7bc12ae9847513c788717b6cc2e0d17909c68ad4dc3f3"
+          },
+          {
+            "config": "candidate",
+            "case": "explanation",
+            "repeat": 0,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 223.22,
+            "decode_tps": 54.92,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 9.200921875075437,
+            "output_sha256": "be97a5d94a6a828268d7bc12ae9847513c788717b6cc2e0d17909c68ad4dc3f3"
+          },
+          {
+            "config": "candidate",
+            "case": "hamlet",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 171.06,
+            "decode_tps": 54.73,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 4.160724707995541,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "baseline",
+            "case": "hamlet",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "120",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Write a three-sentence summary of the plot of Hamlet.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 166.95,
+            "decode_tps": 54.77,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 6.589135750080459,
+            "output_sha256": "e09bc91091f8994f242a6f2c0fc7a72e1b6a3b4a86f4a7baae39c1d5d5439a78"
+          },
+          {
+            "config": "candidate",
+            "case": "fibonacci",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 163.07,
+            "decode_tps": 54.76,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 11.795636041089892,
+            "output_sha256": "5eb6552c4a94b43714d145c923104fbf0018a87f999ae5aee860b06f522885c7"
+          },
+          {
+            "config": "baseline",
+            "case": "fibonacci",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "400",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "List the first 30 Fibonacci numbers with indices.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 154.77,
+            "decode_tps": 54.75,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 11.837340375059284,
+            "output_sha256": "5eb6552c4a94b43714d145c923104fbf0018a87f999ae5aee860b06f522885c7"
+          },
+          {
+            "config": "candidate",
+            "case": "explanation",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4-pr5/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 222.83,
+            "decode_tps": 54.91,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 9.163889416959137,
+            "output_sha256": "be97a5d94a6a828268d7bc12ae9847513c788717b6cc2e0d17909c68ad4dc3f3"
+          },
+          {
+            "config": "baseline",
+            "case": "explanation",
+            "repeat": 1,
+            "warmup": false,
+            "command": [
+              "/Users/ifioravanti/github/ds4/ds4",
+              "-m",
+              "/Users/ifioravanti/models/qwen38-q2down-experiment/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+              "--metal",
+              "--ctx",
+              "8192",
+              "-n",
+              "256",
+              "--temp",
+              "0",
+              "--nothink",
+              "-p",
+              "Explain how a computer sends a web request over TCP and receives the response. Write four clear paragraphs for a programmer learning networking.",
+              "--ple",
+              "/Users/ifioravanti/models/qwen38-q4k-imatrix/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+            ],
+            "prefill_tps": 215.48,
+            "decode_tps": 54.9,
+            "cycles": 0,
+            "accepted": 0,
+            "wall_s": 9.132903458084911,
+            "output_sha256": "be97a5d94a6a828268d7bc12ae9847513c788717b6cc2e0d17909c68ad4dc3f3"
+          }
+        ],
+        "configs": {
+          "baseline": {
+            "binary": "/Users/ifioravanti/github/ds4/ds4",
+            "binary_sha256": "8d7b53cd6d7847e427794e5ae88bbb585d47464b055ceec0f6ad6920ea68b5f0",
+            "source": "/Users/ifioravanti/github/ds4/metal/qwen4.metal",
+            "source_sha256": "e9a4bd359af48d12d3213f4d8ef10478dcd7e6828bf6d5eb1e70ac5a200b8da7",
+            "moe_source": "/Users/ifioravanti/github/ds4/metal/moe.metal",
+            "moe_source_sha256": "b037335c03b230f5f85c0c47463a8f02ebb6269db1bb26d4beeb586f163cfd3c"
+          },
+          "candidate": {
+            "binary": "/Users/ifioravanti/github/ds4-pr5/ds4",
+            "binary_sha256": "2827e895da62b9a7c553ce6dac25d68077577d5e185dda74076acd8afb5858df",
+            "source": "/Users/ifioravanti/github/ds4-pr5/metal/qwen4.metal",
+            "source_sha256": "051d4dbc6f8c6d1bfcf4dbaa57aefe133dee4e68f7c60ddf52d00419050249ba",
+            "moe_source": "/Users/ifioravanti/github/ds4-pr5/metal/moe.metal",
+            "moe_source_sha256": "b037335c03b230f5f85c0c47463a8f02ebb6269db1bb26d4beeb586f163cfd3c"
+          }
+        }
+      }
+    }
+  },
+  "validation_logs": {
+    "general-suites": {
+      "path": "OUT/pr5-validation/general-suites.log",
+      "sha256": "900c9ddc3cf0602ed05e9209034a014ae037959ea42fb3c5b46137925d825750"
+    },
+    "host-suites": {
+      "path": "OUT/pr5-validation/host-suites.log",
+      "sha256": "c66c00e65786008c32e3a20709ec1b8cbbde5959c49691f99fce38bdb66d444d"
+    },
+    "metal-suites": {
+      "path": "OUT/pr5-validation/metal-suites.log",
+      "sha256": "08ff263d93d8e6f5e5d23007f92710db57fd2343940105a41ffd32bb7c2cec46"
+    },
+    "python-suites": {
+      "path": "OUT/pr5-validation/python-suites.log",
+      "sha256": "59e83b110738f49f33e3fc6abee61d7866f81b41a8c94615b584a15713a1ef09"
+    },
+    "mv-exact": {
+      "path": "OUT/pr5-validation/mv-exact.log",
+      "sha256": "93ab89af55aecd6ec817c94527e9d76003067401ad772edad7378edc6611fc74"
+    },
+    "indexer-exact": {
+      "path": "OUT/pr5-validation/indexer-exact.log",
+      "sha256": "1a5fe90350c57ec26ef9f49165d41d3bd637dceb2262cee92ae5d687c768f7cf"
+    },
+    "forced-kernel-paths": {
+      "path": "OUT/pr5-validation/forced-kernel-paths.log",
+      "sha256": "197ee17eb134e0d32d8e22674dc191b749742c85bfd71177b427bbd0b7c730b8"
+    },
+    "expert-major-prefill": {
+      "path": "OUT/pr5-validation/expert-major-prefill.log",
+      "sha256": "53b7af8ded32215e5472ac1a3504799bbf4eb5a2273843d47d27e88f78b01d27"
+    },
+    "forced-full-model-32k": {
+      "path": "OUT/pr5-validation/forced-full-model-32k.log",
+      "sha256": "2651819310aeae7bf9b9f6adede2d8c7f19a21080f1a20414eb4363fbbfa258e"
+    },
+    "q4-session-False": {
+      "path": "OUT/pr5-validation/q4-session-False.log",
+      "sha256": "f75b28a9475cd756eabcdfbfcbb68b8cf184afd0535f36bf58aeb830b007113d"
+    },
+    "q4-session-True": {
+      "path": "OUT/pr5-validation/q4-session-True.log",
+      "sha256": "47bf8c37863c04627f1222975ccfd99a38440418c77d58f57668012613a3f926"
+    },
+    "q2-session-False": {
+      "path": "OUT/pr5-validation/q2-session-False.log",
+      "sha256": "73e9b5ec9c72a81805b071374a68d61d3159816ce57ade3e97c3f23ddf16c0ec"
+    },
+    "q2-session-True": {
+      "path": "OUT/pr5-validation/q2-session-True.log",
+      "sha256": "b4ca8c92f538254ad2a3fb32bf3b8a94d3e5b1bb0383f64eb774683fa8b76eb7"
+    }
+  },
+  "forced_32k": [
+    "variant=control tokens=128 seconds=2.587632 tokens_per_second=49.4661",
+    "variant=candidate tokens=128 seconds=2.491345 tokens_per_second=51.3779",
+    "speedup=1.0386 percent=+3.865 exact_rows=145 exact_floats=36006400"
+  ]
+}

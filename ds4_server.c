@@ -6242,13 +6242,11 @@ static bool parse_qwen_generated_message_ex(const char *text,
         p = skip_ascii_ws(p);
         if (strncmp(p, tool_start, strlen(tool_start)) != 0) break;
         p += strlen(tool_start);
-        const char *close = strstr(p, tool_end);
-        if (!close) return false;
         p = skip_ascii_ws(p);
         if (strncmp(p, fn_start, strlen(fn_start)) != 0) return false;
         p += strlen(fn_start);
-        const char *name_end = strchr(p, '>');
-        if (!name_end || name_end > close) return false;
+        const char *name_end = p + strcspn(p, "<>");
+        if (*name_end != '>') return false;
         const char *name_start = p;
         const char *name_trim_end = name_end;
         trim_const_span(&name_start, &name_trim_end);
@@ -6269,8 +6267,8 @@ static bool parse_qwen_generated_message_ex(const char *text,
                 return false;
             }
             q += strlen(param_start);
-            const char *key_end = strchr(q, '>');
-            if (!key_end || key_end > close) {
+            const char *key_end = q + strcspn(q, "<>");
+            if (*key_end != '>') {
                 free(name);
                 buf_free(&args);
                 return false;
@@ -6280,8 +6278,11 @@ static bool parse_qwen_generated_message_ex(const char *text,
             trim_const_span(&key_start, &key_trim_end);
             char *key = xstrndup(key_start, (size_t)(key_trim_end - key_start));
             const char *value_start = key_end + 1;
+            /* Only the parameter delimiter ends its value. Tool/function
+             * markers inside argument data are literal text; check the call
+             * boundary after consuming the parameters and </function>. */
             const char *value_end = strstr(value_start, param_end);
-            if (!value_end || value_end > close) {
+            if (!value_end) {
                 free(name);
                 free(key);
                 buf_free(&args);
@@ -17053,6 +17054,67 @@ static void test_parse_qwen_tool_call_message(void) {
     tool_calls_free(&bad);
 }
 
+static void test_qwen_literal_tool_end_in_argument(void) {
+    const char *block =
+        "<tool_call>\n<function=write>\n<parameter=content>\n"
+        "literal </tool_call> and <tool_call> with ‘quotes’ and “quotes”\n"
+        "</parameter>\n<parameter=path>\n/tmp/markers.txt\n</parameter>\n"
+        "</function>\n</tool_call>\n"
+        "<tool_call>\n<function=read>\n<parameter=path>\n/tmp/markers.txt\n"
+        "</parameter>\n</function>\n</tool_call>";
+    for (int thinking = 0; thinking < 2; thinking++) {
+        buf generated = {0};
+        if (thinking) buf_puts(&generated, "Writing a marker example.\n</think>\n");
+        buf_puts(&generated, block);
+        char *content = NULL, *reasoning = NULL;
+        tool_calls calls = {0};
+        const char *finish = "stop";
+        char err[128] = {0};
+        bool recovered = false;
+        TEST_ASSERT(parse_generated_message_for_response_for_syntax(
+            SERVER_MODEL_SYNTAX_QWEN, generated.ptr, true, true, thinking,
+            &finish, err, sizeof(err), &content, &reasoning, &calls, &recovered));
+        TEST_ASSERT(!recovered && !err[0]);
+        TEST_ASSERT(calls.len == 2);
+        if (calls.len != 2) {
+            free(content);
+            free(reasoning);
+            tool_calls_free(&calls);
+            buf_free(&generated);
+            continue;
+        }
+        TEST_ASSERT(!strcmp(calls.v[0].name, "write"));
+        TEST_ASSERT(strstr(calls.v[0].arguments,
+            "\"content\": \"literal </tool_call> and <tool_call> with ‘quotes’ and “quotes”\"") != NULL);
+        TEST_ASSERT(strstr(calls.v[0].arguments, "\"path\": \"/tmp/markers.txt\"") != NULL);
+        TEST_ASSERT(!strcmp(calls.v[1].name, "read"));
+        TEST_ASSERT(calls.raw_tool_text && strstr(calls.raw_tool_text, block));
+        free(content);
+        free(reasoning);
+        tool_calls_free(&calls);
+        buf_free(&generated);
+    }
+
+    /* Consuming values first must not accept missing structural delimiters. */
+    const char *bad[] = {
+        "<tool_call><function=write</tool_call>",
+        "<tool_call><function=write><parameter=content</tool_call>",
+        "<tool_call><function=write><parameter=content>literal </tool_call>",
+        "<tool_call><function=write><parameter=content>literal </tool_call></parameter></tool_call>",
+        "<tool_call><function=write><parameter=content>literal </tool_call></parameter></function>",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char *content = NULL, *reasoning = NULL;
+        tool_calls calls = {0};
+        TEST_ASSERT(!parse_generated_message_ex_for_syntax(
+            SERVER_MODEL_SYNTAX_QWEN, bad[i], false, &content, &reasoning, &calls));
+        TEST_ASSERT(calls.len == 0);
+        free(content);
+        free(reasoning);
+        tool_calls_free(&calls);
+    }
+}
+
 /* Qwen: the thinking-mode live checkpoint key must be exactly what the next
  * request renders for this turn when the client does not send reasoning back */
 static void test_qwen_thinking_visible_text_matches_render(void) {
@@ -20876,6 +20938,7 @@ static void ds4_server_unit_tests_run(void) {
     test_qwen_tool_visible_checkpoint_boundary();
     test_qwen_decode_tracker_markers();
     test_parse_qwen_tool_call_message();
+    test_qwen_literal_tool_end_in_argument();
     test_qwen_tool_checkpoint_round_trip();
     test_qwen_sampled_tool_text_after_think_renders_exactly();
     test_qwen_parallel_tool_calls_parse_and_replay();
