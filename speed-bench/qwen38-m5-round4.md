@@ -112,3 +112,19 @@ tensor ops, so routed tiles on tensor ops would be consistent with the
 device's existing practice, but it changes the M5 logits against the current
 build and needs the user's decision and a quality gate.
 
+## Post-round checks
+
+- **262K frontier.** Per-frontier sweep of the upstream build vs this branch:
+  frontier logits exact, decode 40.62 -> 43.51 t/s (+7.1%); its prefill column
+  (792.7 -> 756.3) is thermally confounded (four 5-6 minute runs decline
+  monotonically 856, 783, 730, 729 t/s).  The chunk-interleaved A/B at the
+  same frontier (245K-token untimed prefix, 8192-token chunks) reads 32-token
+  tiles 521.6 t/s vs the 64-token default 567.2 t/s: **+8.7%**, logits exact.
+- **Prefill chunk width** at a 32K frontier (single-process runs, two passes):
+  4096 -> 987 / 929 t/s, 8192 -> 1026 / 945, 16384 -> 896 / 800.  The 8192
+  default stays; frontier logits are identical across the three widths.
+- **Server `ignore_eos` token pick** (gap scan between the few stop ids with
+  the unrolled argmax instead of a predicate per vocabulary entry): outputs
+  identical, throughput unchanged within noise (56.4-56.6 vs 56.8 t/s on a
+  125-token greedy completion), so the scalar loop is not on the critical
+  path as estimated.  Not adopted.
