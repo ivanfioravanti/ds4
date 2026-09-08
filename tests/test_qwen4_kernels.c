@@ -1642,6 +1642,40 @@ static void test_qwen4_argmax(void) {
 }
 
 /* The paired mixer must preserve both token rows and its partial-group guard. */
+/* The prefetched F16 gate/mix must reproduce the plain kernel byte for byte
+ * on every lane path: ranks that skip the eight-term rounds, that end in a
+ * remainder, and the production 320, for one and several tokens. */
+static void test_hc_mix_prefetch(arena_t *a) {
+    const uint32_t ranks[] = {8u, 72u, 136u, 200u, 320u}, tokens[] = {1u, 3u};
+    for (uint32_t ir = 0; ir < 5u; ir++) {
+        for (uint32_t it = 0; it < 2u; it++) {
+            const uint32_t rank = ranks[ir], T = tokens[it], E = rank == 320u ? 2560u : 96u;
+            const uint64_t n = (uint64_t)T * E, guard = 13u;
+            double *shadow = NULL;
+            const uint64_t off = arena_f16(a, (uint64_t)4u * E * rank, &shadow, 0.3f);
+            free(shadow);
+            float *xn = rand_vec((uint64_t)T * 4u * E, 1.0f), *lo = rand_vec((uint64_t)T * rank, 6.0f);
+            float *ref = malloc((n + guard) * sizeof(float)), *got = malloc((n + guard) * sizeof(float));
+            require_ok(ref && got, "HC prefetch readback allocation");
+            ds4_gpu_tensor *gx = upload(xn, (uint64_t)T * 4u * E), *gl = upload(lo, (uint64_t)T * rank);
+            ds4_gpu_tensor *go = upload(NULL, n + guard);
+            for (uint32_t mode = 0; mode < 2u; mode++) {
+                require_ok(setenv("DS4_QWEN4_HC_MIX_PREFETCH", mode ? "1" : "0", 1) == 0, "HC prefetch override");
+                require_ok(ds4_gpu_tensor_fill_f32(go, 127.25f, n + guard) &&
+                    ds4_gpu_qwen4_hc_gate_mix_tensor(go, gx, gl, a->base, a->size, off, 1u, T, E, 4u, rank) &&
+                    ds4_gpu_tensor_read(go, 0, mode ? got : ref, (n + guard) * sizeof(float)), "HC prefetch dispatch/read");
+            }
+            check_exact_f32("HC prefetch reference finite", ref, ref, n + guard);
+            check_exact_f32("HC prefetch rows and guard", got, ref, n + guard);
+            for (uint64_t j = n; j < n + guard; j++) require_ok(got[j] == 127.25f, "HC prefetch output guard");
+            ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gl); ds4_gpu_tensor_free(gx);
+            free(got); free(ref); free(lo); free(xn);
+        }
+    }
+    unsetenv("DS4_QWEN4_HC_MIX_PREFETCH");
+    printf("HC prefetched mixer: exact against the plain kernel on all lane paths\n");
+}
+
 static void test_hc_pair_groups(arena_t *a) {
     const uint32_t types[] = {1u, 0u, 8u}, widths[] = {9u, 64u, 2560u};
     const char *groups[] = {"4", "1", "2", "8", "16"};
@@ -2590,6 +2624,7 @@ int main(void) {
     test_decode_fusions(&arena);
     test_qwen4_argmax();
     test_hc_pair_groups(&arena);
+    test_hc_mix_prefetch(&arena);
     test_hc(&arena, 2560, 320, 3, 1u);
     test_hc(&arena, 2560, 320, 2, 1u);
     test_hc(&arena, 2560, 320, 2, 0u);
