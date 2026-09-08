@@ -47556,10 +47556,11 @@ typedef struct {
 
 static bool qwen4_moe_mv_specialize(uint32_t type) {
     /* Constant quantization and logical width remove the generic decode
-     * branches. Keep the original per-lane reduction order and padded stride. */
+     * branches. Keep the original per-lane reduction order and padded stride.
+     * The Q4_K model uses MXFP4 down rows; specialize those as well. */
     const int override = ds4_gpu_env_bool("DS4_QWEN4_MOE_MV_SPECIALIZE");
     return override >= 0 ? override != 0 :
-        (type == 16u || type == 10u) && ds4_gpu_device_name_contains("M3 Ultra");
+        (type == 16u || type == 10u || type == 39u) && ds4_gpu_device_name_contains("M3 Ultra");
 }
 
 static uint32_t qwen4_moe_mv_rows(void) {
@@ -47567,7 +47568,9 @@ static uint32_t qwen4_moe_mv_rows(void) {
 }
 
 static uint32_t qwen4_moe_mv_groups(uint32_t type) {
-    const uint32_t default_nsg = type == 10u && ds4_gpu_device_name_contains("M3 Ultra") ? 16u : 8u;
+    /* Q2_K and MXFP4 down projections benefit from more independent rows
+     * per threadgroup, still with one unchanged dot product per SIMD group. */
+    const uint32_t default_nsg = (type == 10u || type == 39u) && ds4_gpu_device_name_contains("M3 Ultra") ? 16u : 8u;
     return (uint32_t)ds4_gpu_env_u64("DS4_QWEN4_MOE_MV_NSG", default_nsg, 1u, 16u);
 }
 

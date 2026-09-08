@@ -1308,7 +1308,7 @@ static void test_moe_types(arena_t *a, uint32_t NE, uint32_t slots, uint32_t E, 
                                             sg_off, su_off, shared_type), "moe mid");
     require_ok(ds4_gpu_qwen4_moe_down_tensor(gpart, gmid, gsel, a->base, a->size, down_off, dtype, NE, T, slots, F, E,
                                              sd_off, shared_type), "moe down");
-    if (dtype == 10u && getenv("DS4_TEST_QWEN4_MV_EXACT")) {
+    if ((dtype == 10u || dtype == 39u) && getenv("DS4_TEST_QWEN4_MV_EXACT")) {
         const uint64_t nm = (uint64_t)T * n_out * F, np = (uint64_t)T * n_out * E;
         float *bm = malloc(nm * sizeof(float)), *bp = malloc(np * sizeof(float));
         float *am = malloc(nm * sizeof(float)), *ap = malloc(np * sizeof(float));
@@ -1326,8 +1326,8 @@ static void test_moe_types(arena_t *a, uint32_t NE, uint32_t slots, uint32_t E, 
             require_ok(ds4_gpu_tensor_read(gmid, 0, am, nm * sizeof(float)) &&
                        ds4_gpu_tensor_read(gpart, 0, ap, np * sizeof(float)), "exact read");
             if (!mode) { memcpy(bm, am, nm * sizeof(float)); memcpy(bp, ap, np * sizeof(float)); }
-            else { check_exact_f32("specialized IQ2 mid", am, bm, nm);
-                   check_exact_f32("specialized Q2 down", ap, bp, np); }
+            else { check_exact_f32("specialized MoE mid", am, bm, nm);
+                   check_exact_f32("specialized MoE down", ap, bp, np); }
         }
         unsetenv("DS4_QWEN4_MOE_MV_SPECIALIZE");
         unsetenv("DS4_QWEN4_MOE_MV_NR");
@@ -2449,6 +2449,10 @@ int main(void) {
 
     if (getenv("DS4_TEST_QWEN4_DECODE_FUSIONS")) { test_decode_fusions(&arena); return 0; }
     if (getenv("DS4_TEST_QWEN4_MV_EXACT")) {
+        test_moe_types(&arena, 8, 6, 2560, 640, 1, 12u, 39u);
+        test_moe_types(&arena, 8, 6, 2560, 640, 2, 12u, 39u);
+        test_moe_types(&arena, 8, 6, 256, 256, 9, 12u, 39u);
+        test_moe_types(&arena, 8, 6, 256, 672, 3, 12u, 39u);
         test_moe_types(&arena, 8, 6, 2560, 640, 1, 16u, 10u);
         test_moe_types(&arena, 8, 6, 2560, 640, 2, 16u, 10u);
         test_moe_types(&arena, 8, 6, 256, 256, 9, 16u, 10u);
