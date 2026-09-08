@@ -2764,7 +2764,7 @@ kernel void kernel_qwen4_moe_mm_mid(
     uint work_count = count, work_start = 0;
     if (qwen4_moe_tail_base) {
         const uint remainder = count % qwen4_moe_tail_base;
-        const uint tail_tt = remainder <= 8u ? 8u : remainder <= 16u ? 16u : 32u;
+        const uint tail_tt = remainder <= 8u ? 8u : remainder <= 16u ? 16u : remainder <= 32u ? 32u : 64u;
         if (TT < qwen4_moe_tail_base) {
             if (!remainder || tail_tt != TT) return;
             work_start = count - remainder;
@@ -2862,6 +2862,11 @@ kernel void kernel_qwen4_moe_mm_mid<2>(constant ds4_metal_args_qwen4_moe_mm &, d
 
 template [[host_name("kernel_qwen4_moe_mm_mid")]]
 kernel void kernel_qwen4_moe_mm_mid<4>(constant ds4_metal_args_qwen4_moe_mm &, device const char *, device const char *, device const int32_t *, device const int32_t *, device const float *, device float *, uint3, ushort, ushort);
+
+/* 64-token tiles: each decoded weight tile serves twice the tokens (8 KB of
+ * activations staged per K step); remainders take the 8/16/32-token kernels. */
+template [[host_name("kernel_qwen4_moe_mm_mid_nt8")]]
+kernel void kernel_qwen4_moe_mm_mid<8>(constant ds4_metal_args_qwen4_moe_mm &, device const char *, device const char *, device const int32_t *, device const int32_t *, device const float *, device float *, uint3, ushort, ushort);
 
 /* part[t][slot][r] = down . mid[t][slot], same tiling with mid as B */
 template <uint NT>
