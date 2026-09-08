@@ -48412,8 +48412,9 @@ int ds4_gpu_qwen4_moe_mid_tensor(
     const bool m3_ultra = q4k && ds4_gpu_device_name_contains("M3 Ultra");
     /* One row per SIMD group improves both single-token decode and the
      * two-token MTP verifier on M3 Ultra without changing dot-product order.
-     * M5 measured the single-token case with four groups per threadgroup. */
-    const bool m5_single = q4k && n_tokens == 1u && ds4_gpu_device_is_m5_apple_silicon();
+     * M5 measured the single-token case with four groups per threadgroup and
+     * the two-row MTP passes with four. */
+    const bool m5_single = q4k && n_tokens <= 2u && ds4_gpu_device_is_m5_apple_silicon();
     const uint32_t default_nr = (m3_ultra && n_tokens <= 2u) || m5_single ? 1u : 2u;
     const bool specialize = !q4k && qwen4_moe_mv_specialize(weight_type);
     const uint64_t nr_env = q4k ?
