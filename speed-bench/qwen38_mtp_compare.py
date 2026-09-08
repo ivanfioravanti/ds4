@@ -49,6 +49,8 @@ def main():
     ap.add_argument("--baseline-source", type=Path, required=True)
     ap.add_argument("--baseline-moe-source", type=Path, required=True)
     ap.add_argument("--candidate-env", action="append", default=[], metavar="NAME=VALUE")
+    ap.add_argument("--baseline-env", action="append", default=[], metavar="NAME=VALUE",
+                    help="overrides for the baseline side (same-build env A/Bs)")
     ap.add_argument("--ctx", type=int, default=8192)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--case", choices=CASES, action="append")
@@ -63,12 +65,14 @@ def main():
         ap.error("--prompt-file and --case are mutually exclusive")
     if args.tokens < 3:
         ap.error("--tokens must be at least 3 for the generation comparison")
-    overrides = {}
-    for item in args.candidate_env:
-        key, sep, value = item.partition("=")
-        if not sep or not key.startswith("DS4_") or key.startswith("DS4_METAL_") and key.endswith("_SOURCE"):
-            ap.error("--candidate-env needs DS4_NAME=VALUE")
-        overrides[key] = value
+    overrides, baseline_overrides = {}, {}
+    for flag, items, target in (("--candidate-env", args.candidate_env, overrides),
+                                ("--baseline-env", args.baseline_env, baseline_overrides)):
+        for item in items:
+            key, sep, value = item.partition("=")
+            if not sep or not key.startswith("DS4_") or key.startswith("DS4_METAL_") and key.endswith("_SOURCE"):
+                ap.error(f"{flag} needs DS4_NAME=VALUE")
+            target[key] = value
     if "DS4_QWEN4_SPEC_FORCE_ACCEPT" in overrides:
         ap.error("forced draft acceptance is not a valid throughput benchmark")
     args.out.mkdir(parents=True, exist_ok=True)
@@ -86,7 +90,7 @@ def main():
                     for name, (binary, source, moe_source) in configs.items()},
         "shared_metal_sha256": {str(p.relative_to(ROOT)): sha256(p) for p in sorted((ROOT / "metal").glob("*"))
                                 if p.is_file() and p.name not in ("qwen4.metal", "moe.metal")},
-        "candidate_env": overrides, "mtp": not args.no_mtp, "records": [],
+        "candidate_env": overrides, "baseline_env": baseline_overrides, "mtp": not args.no_mtp, "records": [],
         "prompt_file": ({"path": str(args.prompt_file.resolve()), "sha256": sha256(args.prompt_file)}
                         if args.prompt_file else None),
     }
@@ -107,8 +111,7 @@ def main():
         env = {key: value for key, value in os.environ.items() if not key.startswith("DS4_")}
         env["DS4_METAL_QWEN4_SOURCE"] = str(source)
         env["DS4_METAL_MOE_SOURCE"] = str(moe_source)
-        if name == "candidate":
-            env.update(overrides)
+        env.update(overrides if name == "candidate" else baseline_overrides)
         stem = args.out / f"{name}-{case}-r{repeat}"
         start = time.monotonic()
         with stem.with_suffix(".stdout").open("wb") as out, stem.with_suffix(".stderr").open("wb") as err:
