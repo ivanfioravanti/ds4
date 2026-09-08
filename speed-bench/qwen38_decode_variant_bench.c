@@ -45,6 +45,7 @@ typedef struct {
     const char *prompt_path;
     int prefix_tokens;
     int ctx;
+    bool mtp;                /* greedy speculative cycles instead of single-token steps */
     int warmup;
     int measured;
     uint32_t prefill_chunk;
@@ -65,6 +66,7 @@ static void usage(FILE *fp, const char *argv0) {
             "  --prefill-chunk N         prefill chunk size (default: engine default)\n"
             "  --ctx N                   session allocation (default: prefix + steps + 1)\n"
             "  --warmup N                untimed steps per variant (default: 16)\n"
+            "  --mtp                 greedy speculative cycles (MTP) instead of single-token steps\n"
             "  --tokens N                measured steps per variant (default: 512)\n",
             argv0);
 }
@@ -147,6 +149,8 @@ static bench_config parse_options(int argc, char **argv) {
             cfg.warmup = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 0);
         } else if (!strcmp(arg, "--tokens") || !strcmp(arg, "--measured")) {
             cfg.measured = parse_int_arg(need_arg(&i, argc, argv, arg), arg, 1);
+        } else if (!strcmp(arg, "--mtp")) {
+            cfg.mtp = true;
         } else {
             fprintf(stderr, "qwen38-decode-variant-bench: unknown option: %s\n", arg);
             usage(stderr, argv[0]);
@@ -157,7 +161,8 @@ static bench_config parse_options(int argc, char **argv) {
         fprintf(stderr, "qwen38-decode-variant-bench: --candidate-env is required\n");
         exit(2);
     }
-    const int64_t needed = (int64_t)cfg.prefix_tokens + cfg.warmup + cfg.measured + 1;
+    /* each speculative cycle can commit two tokens */
+    const int64_t needed = (int64_t)cfg.prefix_tokens + ((int64_t)cfg.warmup + cfg.measured) * (cfg.mtp ? 2 : 1) + 1;
     if (cfg.ctx == 0) cfg.ctx = (int)needed;
     if (needed > cfg.ctx) {
         fprintf(stderr,
@@ -284,6 +289,7 @@ int main(int argc, char **argv) {
         .prefill_chunk = cfg.prefill_chunk,
         .power_percent = 100,
         .warm_weights = true,
+        .glm_mtp = cfg.mtp,      /* Qwen drafts through the GLM-style MTP option */
     };
     ds4_engine *engine = NULL;
     ds4_session *sessions[VARIANT_COUNT] = {0};
@@ -328,6 +334,7 @@ int main(int argc, char **argv) {
 
     const int eos = ds4_token_eos(engine);
     const int total_steps = cfg.warmup + cfg.measured;
+    size_t cycles[VARIANT_COUNT] = {0};
     for (int step = 0; step < total_steps; step++) {
         int token = -1;
         if (compare_frontier(sessions[0], sessions[1], logits[0], logits[1], vocab, eos,
@@ -335,12 +342,26 @@ int main(int argc, char **argv) {
         exact_rows++;
         /* Even steps: control on session 0 then candidate on session 1.  Odd
          * steps reverse both the pairing and the order. */
+        int accepted[VARIANT_COUNT][8];
+        int n_accepted[VARIANT_COUNT] = {0};
         for (int order = 0; order < VARIANT_COUNT; order++) {
             const int session_i = order;
             const int variant_i = (order + step) & 1;
             if (select_variant(&cfg, variant_i) != 0) goto done;
             const double t0 = now_sec();
-            if (ds4_session_eval(sessions[session_i], token, err, sizeof(err)) != 0) {
+            int committed = 1;
+            if (cfg.mtp) {
+                /* one greedy speculative cycle: the committed token plus the
+                 * accepted drafts; both sessions must commit the same list */
+                committed = ds4_session_eval_speculative_argmax(sessions[session_i], token, 4, eos,
+                                                                accepted[session_i], 8, err, sizeof(err));
+                if (committed < 1) {
+                    fprintf(stderr, "qwen38-decode-variant-bench: speculative cycle failed at step=%d variant=%s: %s\n",
+                            step, variant_i ? "candidate" : "control", err[0] ? err : "unknown error");
+                    goto done;
+                }
+                n_accepted[session_i] = committed;
+            } else if (ds4_session_eval(sessions[session_i], token, err, sizeof(err)) != 0) {
                 fprintf(stderr, "qwen38-decode-variant-bench: decode failed at step=%d variant=%s: %s\n",
                         step, variant_i ? "candidate" : "control", err[0] ? err : "unknown error");
                 goto done;
@@ -350,8 +371,15 @@ int main(int argc, char **argv) {
             if (selected < 0) goto done;
             if (step >= cfg.warmup) {
                 elapsed[variant_i] += t1 - t0;
-                measured_tokens[variant_i]++;
+                measured_tokens[variant_i] += (size_t)committed;
+                cycles[variant_i]++;
             }
+        }
+        if (cfg.mtp && (n_accepted[0] != n_accepted[1] ||
+                        memcmp(accepted[0], accepted[1], (size_t)n_accepted[0] * sizeof(int)) != 0)) {
+            fprintf(stderr, "qwen38-decode-variant-bench: accepted tokens differ at step=%d (%d vs %d committed)\n",
+                    step, n_accepted[0], n_accepted[1]);
+            goto done;
         }
     }
     if (compare_frontier(sessions[0], sessions[1], logits[0], logits[1], vocab, eos,
@@ -359,9 +387,12 @@ int main(int argc, char **argv) {
     exact_rows++;
 
     for (int v = 0; v < VARIANT_COUNT; v++) {
-        printf("variant=%s tokens=%zu seconds=%.6f tokens_per_second=%.4f\n",
+        printf("variant=%s tokens=%zu seconds=%.6f tokens_per_second=%.4f",
                v ? "candidate" : "control", measured_tokens[v], elapsed[v],
                elapsed[v] > 0.0 ? (double)measured_tokens[v] / elapsed[v] : 0.0);
+        if (cfg.mtp) printf(" cycles=%zu accepted_per_cycle=%.4f", cycles[v],
+                            cycles[v] ? (double)measured_tokens[v] / (double)cycles[v] : 0.0);
+        putchar('\n');
     }
     if (elapsed[1] > 0.0 && measured_tokens[1] && measured_tokens[0]) {
         const double c = (double)measured_tokens[0] / elapsed[0];

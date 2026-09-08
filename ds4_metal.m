@@ -5488,6 +5488,14 @@ static ds4_gpu_mul_mv_ext_args ds4_gpu_make_mv_ext_args(
     };
 }
 
+/* Simdgroups per threadgroup for the few-row (2..16 tokens) Q8/F16 matvecs
+ * that carry the MTP verify rows.  Rows per threadgroup only: each row keeps
+ * its lane walk and shuffle tree, so outputs are byte-identical at any
+ * value (tests/test_qwen4_kernels.c pins 1/2/4/8). */
+static int16_t ds4_gpu_mv_ext_nsg(void) {
+    return (int16_t)ds4_gpu_env_u64("DS4_METAL_MV_EXT_NSG", 2u, 1u, 8u);
+}
+
 static int16_t ds4_gpu_mv_ext_nxpsg(uint64_t in_dim, uint64_t n_tok) {
     if ((in_dim % 256u) == 0 && n_tok < 3) return 16;
     if ((in_dim % 128u) == 0) return 8;
@@ -19295,7 +19303,7 @@ static int ds4_gpu_matmul_q8_0_legacy_tensor(
         const uint64_t mv_ext_max_tokens =
             ds4_gpu_env_u64("DS4_METAL_Q8_MV_EXT_MAX_TOKENS", 16u, 2u, 128u);
         if (n_tok <= mv_ext_max_tokens && (in_dim % 128u) == 0) {
-            const int16_t nsg = 2;
+            const int16_t nsg = ds4_gpu_mv_ext_nsg();
             const int16_t nxpsg = ds4_gpu_mv_ext_nxpsg(in_dim, n_tok);
             const int16_t r1ptg = ds4_gpu_mv_ext_r1ptg(n_tok);
             const char *fn_name = ds4_gpu_mv_ext_name(1, r1ptg);
@@ -20962,7 +20970,7 @@ int ds4_gpu_matmul_f16_tensor(
         }
 
         if (n_tok <= 8 && (in_dim % 128u) == 0) {
-            const int16_t nsg = 2;
+            const int16_t nsg = ds4_gpu_mv_ext_nsg();
             const int16_t nxpsg = ds4_gpu_mv_ext_nxpsg(in_dim, n_tok);
             const int16_t r1ptg = ds4_gpu_mv_ext_r1ptg(n_tok);
             const char *fn_name = ds4_gpu_mv_ext_name(0, r1ptg);
@@ -21824,7 +21832,7 @@ int ds4_gpu_matmul_f32_tensor(
         }
 
         if (n_tok <= 8 && (in_dim % 128u) == 0) {
-            const int16_t nsg = 2;
+            const int16_t nsg = ds4_gpu_mv_ext_nsg();
             const int16_t nxpsg = ds4_gpu_mv_ext_nxpsg(in_dim, n_tok);
             const int16_t r1ptg = ds4_gpu_mv_ext_r1ptg(n_tok);
             const char *fn_name = ds4_gpu_mv_ext_f32_name(r1ptg);

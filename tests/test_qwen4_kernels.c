@@ -1696,6 +1696,44 @@ static void test_hc_mix_prefetch(arena_t *a) {
     printf("HC prefetched mixers (single and paired): exact against the plain kernels on all lane paths\n");
 }
 
+
+/* The few-row matvec simdgroup count is rows-per-threadgroup only: Q8 and
+ * F16 outputs must match the default byte for byte at 1/2/4/8 groups for the
+ * verify-row shapes (T 2 and 3, odd row counts). */
+static void test_mv_ext_groups(arena_t *a) {
+    const uint32_t T_list[] = {2u, 3u}, rows_list[] = {640u, 641u, 2560u};
+    const char *groups[] = {"2", "1", "4", "8"};
+    for (uint32_t wt = 0; wt < 2u; wt++) {
+        for (uint32_t it = 0; it < 2u; it++) {
+            for (uint32_t ir = 0; ir < 3u; ir++) {
+                const uint32_t T = T_list[it], rows = rows_list[ir], in_dim = 2560u;
+                const uint64_t n = (uint64_t)T * rows, guard = 9u;
+                double *sh = NULL;
+                const uint64_t off = wt ? arena_f16(a, (uint64_t)rows * in_dim, &sh, 0.05f)
+                                        : arena_q8_0(a, rows, in_dim, &sh, 0.05f);
+                free(sh);
+                float *x = rand_vec(n ? (uint64_t)T * in_dim : 1u, 1.0f);
+                float *ref = malloc((n + guard) * sizeof(float)), *got = malloc((n + guard) * sizeof(float));
+                require_ok(ref && got, "mv_ext groups allocation");
+                ds4_gpu_tensor *gx = upload(x, (uint64_t)T * in_dim), *go = upload(NULL, n + guard);
+                for (uint32_t mode = 0; mode < 4u; mode++) {
+                    require_ok(setenv("DS4_METAL_MV_EXT_NSG", groups[mode], 1) == 0, "mv_ext groups override");
+                    require_ok(ds4_gpu_tensor_fill_f32(go, 127.25f, n + guard) &&
+                        (wt ? ds4_gpu_matmul_f16_tensor(go, a->base, a->size, off, in_dim, rows, gx, T)
+                            : ds4_gpu_qwen4_matmul_q8_0_tensor(go, a->base, a->size, off, in_dim, rows, gx, T)) &&
+                        ds4_gpu_tensor_read(go, 0, mode ? got : ref, (n + guard) * sizeof(float)), "mv_ext groups dispatch/read");
+                    if (mode) check_exact_f32(wt ? "F16 mv_ext groups and guard" : "Q8 mv_ext groups and guard", got, ref, n + guard);
+                    else check_exact_f32("mv_ext groups reference finite", ref, ref, n + guard);
+                }
+                ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gx);
+                free(got); free(ref); free(x);
+            }
+        }
+    }
+    unsetenv("DS4_METAL_MV_EXT_NSG");
+    printf("few-row matvec simdgroup counts: Q8 and F16 verify-row shapes exact at 1/2/4/8 groups\n");
+}
+
 static void test_hc_pair_groups(arena_t *a) {
     const uint32_t types[] = {1u, 0u, 8u}, widths[] = {9u, 64u, 2560u};
     const char *groups[] = {"4", "1", "2", "8", "16"};
@@ -2644,6 +2682,7 @@ int main(void) {
     test_decode_fusions(&arena);
     test_qwen4_argmax();
     test_hc_pair_groups(&arena);
+    test_mv_ext_groups(&arena);
     test_hc_mix_prefetch(&arena);
     test_hc(&arena, 2560, 320, 3, 1u);
     test_hc(&arena, 2560, 320, 2, 1u);
