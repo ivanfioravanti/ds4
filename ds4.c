@@ -55421,6 +55421,59 @@ static bool qwen4_graph_moe(ds4_qwen4_gpu_graph *g, const ds4_model *m, const ds
     return ok;
 }
 
+/* Bounded residency for the external PLE n-gram sidecar.  Each token
+ * gathers one ~100-byte row per hash head from the read-only sidecar
+ * mapping; because n-gram keys track the newest tokens, touched pages are
+ * rarely re-referenced yet stay resident for the whole session.
+ * DS4_QWEN4_PLE_EVICT_TOKENS=N drops the clean sidecar pages every N
+ * gathered tokens (0 or unset disables this), bounding the resident set to
+ * the recent token window; recurring n-grams re-fault from disk. */
+static uint64_t qwen4_ple_sidecar_row_bytes(const ds4_tensor *t) {
+    const uint64_t n = t->dim[0], blocks = n / 32u;
+    switch (t->type) {
+    case DS4_TENSOR_F32:  return n * 4u;
+    case DS4_TENSOR_F16:
+    case DS4_TENSOR_BF16: return n * 2u;
+    case DS4_TENSOR_Q8_0: return blocks * 34u;
+    case DS4_TENSOR_Q4_0: return blocks * 18u;
+    case DS4_TENSOR_Q4_1: return blocks * 20u;
+    default: return 0;
+    }
+}
+
+static void qwen4_ple_sidecar_evict(const ds4_model *m, const ds4_tensor *t) {
+    const uint64_t row_bytes = qwen4_ple_sidecar_row_bytes(t);
+    if (!row_bytes) return;
+    const uint64_t span = row_bytes * t->dim[1];
+    uint8_t *base = (uint8_t *)m->ple_model->map + t->abs_offset;
+    const uint64_t page = (uint64_t)getpagesize();
+    const uintptr_t start = ((uintptr_t)base) & ~(uintptr_t)(page - 1u);
+    const uintptr_t end = (((uintptr_t)base) + span + page - 1u) & ~(uintptr_t)(page - 1u);
+    const size_t len = (size_t)(end - start);
+    /* Note: mincore() and pages_resident both report page-cache residency
+     * of the backing file on macOS, not pages mapped into this task, so the
+     * sweep does not log a residency figure; vmmap against the live process
+     * is the reliable measurement for the sidecar region. */
+    (void)posix_madvise((void *)start, len, POSIX_MADV_DONTNEED);
+    fprintf(stderr,
+            "ds4: PLE sidecar eviction: dropped sidecar pages (%.2f GiB span)\n",
+            (double)span / (1024.0 * 1024.0 * 1024.0));
+}
+
+static void qwen4_ple_sidecar_evict_maybe(const ds4_model *m, const ds4_weights *w) {
+    static uint64_t interval = UINT64_MAX; /* UINT64_MAX = not parsed yet */
+    if (!g_ds4_ple_sidecar || !m->ple_model || !w->ple_embd) return;
+    if (interval == UINT64_MAX) {
+        const char *env = getenv("DS4_QWEN4_PLE_EVICT_TOKENS");
+        interval = (env && env[0]) ? strtoull(env, NULL, 10) : 0;
+    }
+    if (!interval) return;
+    static uint64_t gathered;
+    if (++gathered < interval) return;
+    gathered = 0;
+    qwen4_ple_sidecar_evict(m, w->ple_embd);
+}
+
 /* host side: embedding rows tiled into R and the PLE n-gram gather */
 static void qwen4_graph_stage_inputs(ds4_qwen4_gpu_graph *g, const ds4_model *m, const ds4_weights *w,
                                      const int *tokens, uint32_t T) {
@@ -55448,6 +55501,7 @@ static void qwen4_graph_stage_inputs(ds4_qwen4_gpu_graph *g, const ds4_model *m,
             qwen4_ref_row(m->ple_model ? m->ple_model : m, w->ple_embd, rows[h],
                           row + (uint64_t)t * E + (uint64_t)h * DS4_N_PLE_HEAD_DIM);
         }
+        qwen4_ple_sidecar_evict_maybe(m, w);
         if (t == 0 && g->snap_after_first) {
             memcpy(g->snap_ple_prev, g->ple_prev, sizeof(g->ple_prev));
             g->snap_pos = g->pos + 1u;
@@ -63549,6 +63603,7 @@ static void qwen4_ref_ple(const ds4_model *m, const ds4_weights *w, const ds4_la
     const uint32_t hist_rows = (DS4_N_PLE_CONV - 1u) * DS4_N_PLE_NGRAM;
     uint32_t rows[DS4_MAX_PLE_HEADS];
     qwen4_ple_step(token, st->ple_prev, rows);
+    qwen4_ple_sidecar_evict_maybe(m, w);
 
     float *emb = xmalloc(E * sizeof(float));
     for (uint32_t h = 0; h < n_heads; h++)
@@ -66806,8 +66861,13 @@ static int ds4_engine_open_internal(ds4_engine **out,
             return 1;
         }
         /* CPU-only private mapping: the PLE gather runs on the host, so the
-         * sidecar never joins a Metal view or the main residency map. */
-        model_open(&e->ple_model, opt->ple_path, false, true);
+         * sidecar never joins a Metal view or the main residency map.  The
+         * sidecar is demand-paged by design: each token touches ~one page per
+         * hash head of the 30+ GiB table, and a WILLNEED prefault would pull
+         * the whole sidecar into the page cache, which on memory-tight
+         * machines becomes startup pressure for pages that are rarely
+         * re-referenced. */
+        model_open(&e->ple_model, opt->ple_path, false, false);
         const ds4_tensor *ple_t = model_find_tensor(&e->ple_model, "ple.weight");
         if (!ple_t) {
             fprintf(stderr, "ds4: --ple sidecar %s has no ple.weight tensor\n",
