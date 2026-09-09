@@ -52,6 +52,7 @@ gained about 1.5%.
 | 8K -> 40K, 32-token tiles | 1148.0 tok/s | 1359.2 tok/s | +18.4% |
 | 8K -> 40K, 64-token tiles vs 32-token tiles | 1376.0 tok/s (32) | 1422.2 tok/s (64) | +3.4% |
 | 96K -> 128K, 64-token tiles (first repeat of two runs) | 1010.2 / 1023.2 tok/s | 1209.5 / 1234.6 tok/s | +19.7% / +20.7% |
+| 96K -> 128K, after the staging follow-up (one unthrottled repeat) | 1114.6 tok/s | 1452.0 tok/s | +30.3% |
 
 The 64-token and 32-token tensor tiles produce bit-identical logits (each output
 element accumulates over the same K order); the 64-token tiles are the opt-in
@@ -91,6 +92,68 @@ NLL moved in either direction on 51 vs 48 cases.  For scale, the Q4_K -> Q8 pack
 spread on the same fixture is 0.015 NLL and 0.022 MAE (`qwen38-iq2-quality.md`);
 the tensor-tile drift is two orders of magnitude below it.
 
+## Follow-up: what the tensor tiles are bound by, and two staging fixes
+
+Skip-variants of the tensor-tile source (`DS4_METAL_QWEN4_SOURCE` override, 64-token
+tiles, `moe mm q4k/mxfp4 32` dense / `lo 256` sparse):
+
+| variant | dense | sparse | attribution |
+| --- | ---: | ---: | --- |
+| full | 7.40 ms | 11.17 ms | |
+| no tensor op | 4.33 ms | 7.12 ms | tensor op 41% / 36% (about 66 TFLOPS) |
+| no weight dequant | 4.84 ms | 6.84 ms | weight staging 35% / 39% |
+| no activation staging | 6.05 ms | 9.07 ms | activation staging 18% / 19% |
+| no epilogue scatter | 7.23 ms | 10.76 ms | epilogue 2-4% |
+
+The parts add up to the whole: staging and the tensor op barely overlap inside a
+threadgroup, so the staging is the lever.  Two changes, both bit-identical (the
+test prints an FNV hash of the tensor-tile outputs; it did not move):
+
+- **Pre-rounded half activation operand.**  `kernel_qwen4_rows_f32_to_f16` rounds
+  the operand once per call into a scratch tensor; each K step then gathers one
+  16-byte word per item instead of two float4 gathers and eight conversions per
+  row block.  7.40 -> 7.13 ms dense, 11.17 -> 10.5 ms sparse (conversion pass
+  included).  8K-40K prefill: +28.7% over the simdgroup tiles (was +22%).
+- **Register prefetch of the next K step's weight words.**  Rewriting the dequant
+  arithmetic did nothing (vector nibble unpack, MXFP4 bit decode: within noise or
+  worse); the cost is the scattered device loads issued in the step that consumes
+  them.  `qwen4_load_raw16` fetches step k+1's raw words (Q4_K header + nibbles,
+  or the 17 MXFP4 bytes) into registers during step k; `qwen4_dequant_raw16` runs
+  the unchanged float expressions on them.  7.13 -> 6.70 ms dense, 10.5 -> 9.7 ms
+  sparse.  8K-40K prefill: **1193 -> 1556 tok/s, +30.4%** over the simdgroup tiles.
+- **32-token tail tile.**  An expert whose count leaves a remainder of at most 32
+  tokens paid a half-empty 64-token tile (full dequant, half the tensor work).  The
+  simdgroup kernels' tail mechanism (`qwen4_moe_tail_base` = 64) now applies to the
+  tensor tiles: the 64-token kernel keeps the full tiles, the 32-token kernel takes
+  the remainder.  Sparse microbench 9.5 -> 8.1 ms, dense unchanged; 8K-40K prefill
+  +1.0% with the tensor tiles on both sides (three of four interleaved pairs).
+- **Half copy of `mid` written by the mid tiles.**  The conversion pass feeding the
+  down tiles read and wrote `mid` again (315 MB per layer), 3.4% of the chunk in the
+  timeline.  The mid epilogue now writes the half copy beside the float `mid`, into
+  a second scratch the down dispatch uses when the mid tiles just produced it (it
+  converts `mid` itself otherwise); the x conversion does 16 values per thread.
+  6.64-6.68 -> 6.52-6.60 ms dense; 8K-40K prefill **1186 -> 1572 tok/s, +32.6%**
+  over the simdgroup tiles.
+
+Rejected with numbers (all exact where applicable):
+
+| candidate | result |
+| --- | --- |
+| vectorized threadgroup stores in the tensor-tile staging | bit-identical, 7.37-7.42 vs 7.36-7.47 ms |
+| Q4_K vector nibble unpack / MXFP4 bit decode / vectorized table path | bit-identical, 7.06-7.15 / 7.29-7.37 / 7.10-7.15 ms vs 7.11-7.14 |
+| attention K/V gather pipelined one tile ahead (`kernel_qwen4_attn_mm`) | exact, +0.24% at 8K-40K (noise); the per-token threadgroups already hide the gather latency |
+| GDN scan next-token operand prefetch (`kernel_qwen4_gdn_scan_r4`) | exact, scan bench 1120 vs 1112-1122 us; the scan is bound by its reduction chain |
+
+Where a chunk goes (8192 tokens at prefix 0, encoder timeline): with the first
+tensor tiles, routed mid 21.7%, dense Q8 tensor-op GEMMs 19.3%, routed down 11.7%,
+attention 11.5%, GDN scan 6.4%, HC low-rank GEMMs 5.3%; after the staging fixes the
+chunk is 6.5% shorter and the order is dense Q8 GEMMs 20.7%, routed mid 15.9%,
+attention 12.3%, routed down 9.2%, GDN scan 6.8%, HC GEMMs 5.7%.  Over the thirteen
+chunks to 104K the attention share rises to 12.9%.  The attention kernel gathers about 2048
+selected keys per token; an exact prefetch does not help it, so its remaining lever
+is a multi-token restructure sharing the selected blocks across a query tile, which
+changes the online-softmax order (drift class) and is left for a decision.
+
 ## Verification
 
 - `tests/test_qwen4_kernels`: all passes, including the bounded tensor-tile pass
@@ -100,3 +163,7 @@ the tensor-tile drift is two orders of magnitude below it.
   API available.  Checked across binaries: the 99 fixture cases scored by the
   pre-round build and by this branch with the variable unset give byte-identical
   full-vocabulary logits (99/99 files) and the same metrics.
+- The follow-up staging changes keep the tensor-tile outputs bit-identical to the
+  version the quality gate scored (the test's FNV hashes of the mid and down tiles
+  did not move across them, and the A/B drift lines are identical), so the gate
+  numbers above stand for the final kernels.
