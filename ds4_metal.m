@@ -11508,6 +11508,8 @@ int ds4_gpu_synchronize(void) {
     return ds4_gpu_finish_command_buffer(cb, 1, "synchronize");
 }
 
+static void qwen4_nax_release_scratch(void);
+
 void ds4_gpu_cleanup(void) {
     if (!g_initialized) return;
     ds4_gpu_queue_keepalive_stop_thread();
@@ -11796,6 +11798,7 @@ void ds4_gpu_cleanup(void) {
         g_model_mapped_offset = 0;
         g_model_mapped_size = 0;
         g_model_mapped_max_tensor_bytes = 0;
+        qwen4_nax_release_scratch();
         ds4_gpu_tensor_tracking_reset();
         g_flash_attn_mask_bytes = 0;
         g_flash_attn_zero_mask_bytes = 0;
@@ -48605,6 +48608,11 @@ static uint32_t qwen4_moe_mm_nax(uint32_t type) {
  * half into a scratch tensor that grows on demand (one conversion pass). */
 static ds4_gpu_tensor *g_qwen4_nax_half_operand;
 static uint64_t g_qwen4_nax_half_operand_bytes;
+static void qwen4_nax_release_scratch(void) {
+    if (g_qwen4_nax_half_operand) ds4_gpu_tensor_free(g_qwen4_nax_half_operand);
+    g_qwen4_nax_half_operand = NULL;
+    g_qwen4_nax_half_operand_bytes = 0;
+}
 static ds4_gpu_tensor *qwen4_nax_half_operand(const ds4_gpu_tensor *src, uint64_t count) {
     const uint64_t bytes = count * sizeof(uint16_t);
     if (count == 0 || (count % 4u) != 0) return NULL;
