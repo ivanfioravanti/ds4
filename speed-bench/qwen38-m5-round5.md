@@ -143,6 +143,8 @@ Rejected with numbers (all exact where applicable):
 | Q4_K vector nibble unpack / MXFP4 bit decode / vectorized table path | bit-identical, 7.06-7.15 / 7.29-7.37 / 7.10-7.15 ms vs 7.11-7.14 |
 | attention K/V gather pipelined one tile ahead (`kernel_qwen4_attn_mm`) | exact, +0.24% at 8K-40K (noise); the per-token threadgroups already hide the gather latency |
 | GDN scan next-token operand prefetch (`kernel_qwen4_gdn_scan_r4`) | exact, scan bench 1120 vs 1112-1122 us; the scan is bound by its reduction chain |
+| register prefetch of the next k step's Q8 words in the dense tensor-op GEMM (`kernel_mul_mm_q8_0_f32_nax_direct_rhs_n128`, default path) | exact, -1.6% at 8K-24K (3.3 -> 3.6 ms per dispatch) |
+| register prefetch of the weight words in the simdgroup routed tiles (`kernel_qwen4_moe_mm_mid/down_nt8`, default path) | 16.0 -> 16.7 ms dense, 17.8 -> 18.4 ms sparse; the simdgroup tiles are MAC-bound, the extra registers cost more than the hidden latency |
 
 Where a chunk goes (8192 tokens at prefix 0, encoder timeline): with the first
 tensor tiles, routed mid 21.7%, dense Q8 tensor-op GEMMs 19.3%, routed down 11.7%,
