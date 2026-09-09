@@ -48606,30 +48606,45 @@ static uint32_t qwen4_moe_mm_nax(uint32_t type) {
 
 /* The tensor tiles' activation operand: `count` floats of `src` rounded to
  * half into a scratch tensor that grows on demand (one conversion pass). */
-static ds4_gpu_tensor *g_qwen4_nax_half_operand;
-static uint64_t g_qwen4_nax_half_operand_bytes;
+/* Two scratch tensors grown on demand: the mid tiles' activation operand (x
+ * rounded to half by one conversion pass) and the half copy of `mid` that the
+ * mid tiles write for the down tiles.  The down dispatch uses the latter only
+ * when the mid tiles just produced it for the same tensor and size; otherwise
+ * it converts `mid` itself. */
+static ds4_gpu_tensor *g_qwen4_nax_half_x, *g_qwen4_nax_half_mid;
+static uint64_t g_qwen4_nax_half_x_bytes, g_qwen4_nax_half_mid_bytes;
+static const ds4_gpu_tensor *g_qwen4_nax_half_mid_for;
+static uint64_t g_qwen4_nax_half_mid_count;
 static void qwen4_nax_release_scratch(void) {
-    if (g_qwen4_nax_half_operand) ds4_gpu_tensor_free(g_qwen4_nax_half_operand);
-    g_qwen4_nax_half_operand = NULL;
-    g_qwen4_nax_half_operand_bytes = 0;
+    if (g_qwen4_nax_half_x) ds4_gpu_tensor_free(g_qwen4_nax_half_x);
+    if (g_qwen4_nax_half_mid) ds4_gpu_tensor_free(g_qwen4_nax_half_mid);
+    g_qwen4_nax_half_x = g_qwen4_nax_half_mid = NULL;
+    g_qwen4_nax_half_x_bytes = g_qwen4_nax_half_mid_bytes = 0;
+    g_qwen4_nax_half_mid_for = NULL;
+    g_qwen4_nax_half_mid_count = 0;
 }
-static ds4_gpu_tensor *qwen4_nax_half_operand(const ds4_gpu_tensor *src, uint64_t count) {
+static ds4_gpu_tensor *qwen4_nax_scratch(ds4_gpu_tensor **slot, uint64_t *slot_bytes, uint64_t bytes) {
+    if (!*slot || *slot_bytes < bytes) {
+        if (*slot) ds4_gpu_tensor_free(*slot);
+        *slot = ds4_gpu_tensor_alloc(bytes);
+        *slot_bytes = *slot ? bytes : 0;
+    }
+    return *slot;
+}
+static ds4_gpu_tensor *qwen4_nax_half_operand(ds4_gpu_tensor **slot, uint64_t *slot_bytes,
+                                              const ds4_gpu_tensor *src, uint64_t count) {
     const uint64_t bytes = count * sizeof(uint16_t);
     if (count == 0 || (count % 4u) != 0) return NULL;
-    if (!g_qwen4_nax_half_operand || g_qwen4_nax_half_operand_bytes < bytes) {
-        if (g_qwen4_nax_half_operand) ds4_gpu_tensor_free(g_qwen4_nax_half_operand);
-        g_qwen4_nax_half_operand = ds4_gpu_tensor_alloc(bytes);
-        g_qwen4_nax_half_operand_bytes = g_qwen4_nax_half_operand ? bytes : 0;
-        if (!g_qwen4_nax_half_operand) return NULL;
-    }
+    ds4_gpu_tensor *dst = qwen4_nax_scratch(slot, slot_bytes, bytes);
+    if (!dst) return NULL;
     struct { uint32_t n4; } args = { (uint32_t)(count / 4u) };
     qwen4_bind b[2];
     if (!qwen4_bind_tensor(&b[0], src, count * sizeof(float), "nax half operand source") ||
-        !qwen4_bind_tensor(&b[1], g_qwen4_nax_half_operand, bytes, "nax half operand")) return NULL;
-    const uint32_t n4 = args.n4;
+        !qwen4_bind_tensor(&b[1], dst, bytes, "nax half operand")) return NULL;
+    const uint32_t n_threads = (args.n4 + 3u) / 4u;   /* 16 values per thread */
     if (!qwen4_dispatch(QWEN4_K_ROWS_F32_TO_F16, &args, sizeof(args), b, 2,
-                        MTLSizeMake((n4 + 255u) / 256u, 1, 1), MTLSizeMake(256, 1, 1), 0)) return NULL;
-    return g_qwen4_nax_half_operand;
+                        MTLSizeMake((n_threads + 255u) / 256u, 1, 1), MTLSizeMake(256, 1, 1), 0)) return NULL;
+    return dst;
 }
 
 static bool qwen4_moe_mm_tails(uint32_t type, uint32_t nt) {
@@ -48657,7 +48672,7 @@ int ds4_gpu_qwen4_moe_mm_mid_tensor(
                                expert_bytes, n_expert, tiles, 0, qwen4_moe_mm_expert_major() };
     const bool tails = qwen4_moe_mm_tails(weight_type, nt);
     if (tails) args.tail_base = nt * 8u;
-    qwen4_bind b[6];
+    qwen4_bind b[7];
     if (n_tokens == 0 || n_slots == 0 || n_out < n_slots || row_bytes == 0 ||
         (weight_type != 8u && weight_type != 39u && weight_type != 12u && weight_type != 10u && weight_type != 16u && weight_type != 2u) ||
         (in_dim % 64) != 0 || ff_dim == 0 || n_expert == 0 || n_expert > 512 ||
@@ -48672,16 +48687,21 @@ int ds4_gpu_qwen4_moe_mm_mid_tensor(
     const uint32_t nax = qwen4_moe_mm_nax(weight_type);
     if (nax) {
         args.tail_base = 0;
-        ds4_gpu_tensor *xh = qwen4_nax_half_operand(x, (uint64_t)n_tokens * in_dim);
-        if (!xh || !qwen4_bind_tensor(&b[4], xh, (uint64_t)n_tokens * in_dim * sizeof(uint16_t), "moe input half")) return 0;
+        ds4_gpu_tensor *xh = qwen4_nax_half_operand(&g_qwen4_nax_half_x, &g_qwen4_nax_half_x_bytes, x, (uint64_t)n_tokens * in_dim);
+        const uint64_t mid_count = (uint64_t)n_tokens * n_out * ff_dim;
+        ds4_gpu_tensor *mh = qwen4_nax_scratch(&g_qwen4_nax_half_mid, &g_qwen4_nax_half_mid_bytes, mid_count * sizeof(uint16_t));
+        if (!xh || !mh || !qwen4_bind_tensor(&b[4], xh, (uint64_t)n_tokens * in_dim * sizeof(uint16_t), "moe input half") ||
+            !qwen4_bind_tensor(&b[6], mh, mid_count * sizeof(uint16_t), "moe mid half")) return 0;
+        g_qwen4_nax_half_mid_for = mid;
+        g_qwen4_nax_half_mid_count = mid_count;
         const bool nax_tails = nax == 64u && qwen4_moe_mm_tails(weight_type, 8u);
         if (nax_tails) args.tail_base = 64u;
-        if (!qwen4_dispatch(nax == 64u ? QWEN4_K_MOE_MM_MID_NAX64 : QWEN4_K_MOE_MM_MID_NAX, &args, sizeof(args), b, 6,
+        if (!qwen4_dispatch(nax == 64u ? QWEN4_K_MOE_MM_MID_NAX64 : QWEN4_K_MOE_MM_MID_NAX, &args, sizeof(args), b, 7,
                             qwen4_moe_mm_grid((ff_dim + 63u) / 64u, n_expert, tiles, args.expert_major),
                             MTLSizeMake(128, 1, 1), nax == 64u ? 16384u : 10240u)) return 0;
         if (!nax_tails) return 1;
         args.tiles_per_launch = 1;
-        return qwen4_dispatch(QWEN4_K_MOE_MM_MID_NAX, &args, sizeof(args), b, 6,
+        return qwen4_dispatch(QWEN4_K_MOE_MM_MID_NAX, &args, sizeof(args), b, 7,
                               qwen4_moe_mm_grid((ff_dim + 63u) / 64u, n_expert, 1, args.expert_major),
                               MTLSizeMake(128, 1, 1), 10240u);
     }
@@ -48728,8 +48748,13 @@ int ds4_gpu_qwen4_moe_mm_down_tensor(
     const uint32_t nax = qwen4_moe_mm_nax(weight_type);
     if (nax) {
         args.tail_base = 0;
-        ds4_gpu_tensor *mh = qwen4_nax_half_operand(mid, (uint64_t)n_tokens * n_out * ff_dim);
-        if (!mh || !qwen4_bind_tensor(&b[3], mh, (uint64_t)n_tokens * n_out * ff_dim * sizeof(uint16_t), "moe mid half")) return 0;
+        const uint64_t mid_count = (uint64_t)n_tokens * n_out * ff_dim;
+        ds4_gpu_tensor *mh = g_qwen4_nax_half_mid_for == mid && g_qwen4_nax_half_mid_count == mid_count && g_qwen4_nax_half_mid
+                             ? g_qwen4_nax_half_mid
+                             : qwen4_nax_half_operand(&g_qwen4_nax_half_mid, &g_qwen4_nax_half_mid_bytes, mid, mid_count);
+        g_qwen4_nax_half_mid_for = NULL;
+        g_qwen4_nax_half_mid_count = 0;
+        if (!mh || !qwen4_bind_tensor(&b[3], mh, mid_count * sizeof(uint16_t), "moe mid half")) return 0;
         const bool nax_tails = nax == 64u && qwen4_moe_mm_tails(weight_type, 8u);
         if (nax_tails) args.tail_base = 64u;
         if (!qwen4_dispatch(nax == 64u ? QWEN4_K_MOE_MM_DOWN_NAX64 : QWEN4_K_MOE_MM_DOWN_NAX, &args, sizeof(args), b, 5,
