@@ -3,6 +3,74 @@
 #include "../ds4.c"
 #include <assert.h>
 
+static void test_vision_prefix(void) {
+    ds4_session *s = calloc(1, sizeof(*s));
+    assert(s);
+    s->checkpoint_valid = true;
+    s->checkpoint.len = 100;
+    ds4_vision_span images[2] = {
+        {.token_start = 100, .embedding = {.token_count = 10, .fingerprint = {1}}},
+        {.token_start = 150, .embedding = {.token_count = 10, .fingerprint = {2}}},
+    };
+    assert(ds4_session_vision_prefix_matches(s, NULL, 0));
+    assert(ds4_session_vision_prefix_matches(s, images, 1));
+    assert(!ds4_session_vision_state_matches(s, images, 1));
+    images[0].token_start = 99;
+    assert(!ds4_session_vision_prefix_matches(s, images, 1));
+    ds4_vision_identity old = {.token_start = 50, .token_count = 10, .fingerprint = {1}};
+    s->checkpoint_images = &old;
+    s->checkpoint_image_count = 1;
+    images[0].token_start = 50;
+    assert(ds4_session_vision_state_matches(s, images, 1));
+    assert(ds4_session_vision_prefix_matches(s, images, 2));
+    assert(!ds4_session_vision_state_matches(s, images, 2));
+    assert(!ds4_session_vision_prefix_matches(s, NULL, 0));
+    images[0].embedding.fingerprint[0] ^= 1;
+    assert(!ds4_session_vision_prefix_matches(s, images, 2));
+    images[0].embedding.fingerprint[0] ^= 1;
+    images[0].token_start++;
+    assert(!ds4_session_vision_prefix_matches(s, images, 2));
+    images[0].token_start--;
+    images[0].token_start = 7;
+    assert(ds4_session_rebase_vision_state(s, images, 1));
+    assert(images[0].token_start == 50);
+    images[0].token_start = 7;
+    assert(!ds4_session_rebase_vision_state(s, images, 2));
+    assert(images[0].token_start == 7);
+    images[0].embedding.fingerprint[0] ^= 1;
+    assert(!ds4_session_rebase_vision_state(s, images, 1));
+    assert(images[0].token_start == 7);
+    images[0].embedding.fingerprint[0] ^= 1;
+    images[0].embedding.token_count++;
+    assert(!ds4_session_rebase_vision_state(s, images, 1));
+    images[0].embedding.token_count--;
+    images[0].token_start = 50;
+    images[1].token_start = 99;
+    assert(!ds4_session_vision_prefix_matches(s, images, 2));
+    ds4_vision_identity pair[2] = {
+        {.token_start = 50, .token_count = 10, .fingerprint = {1}},
+        {.token_start = 70, .token_count = 10, .fingerprint = {2}},
+    };
+    s->checkpoint_images = pair;
+    s->checkpoint_image_count = 2;
+    images[0].token_start = 7;
+    images[1].token_start = 8;
+    images[1].embedding.fingerprint[31] ^= 1;
+    assert(!ds4_session_rebase_vision_state(s, images, 2));
+    assert(images[0].token_start == 7 && images[1].token_start == 8);
+    images[1].embedding.fingerprint[31] ^= 1;
+    assert(ds4_session_rebase_vision_state(s, images, 2));
+    assert(images[0].token_start == 50 && images[1].token_start == 70);
+    assert(ds4_session_vision_state_matches(s, images, 2));
+    ds4_vision_span swapped[2] = {images[1], images[0]};
+    assert(!ds4_session_rebase_vision_state(s, swapped, 2));
+    assert(!ds4_session_vision_prefix_matches(s, swapped, 2));
+    s->checkpoint_valid = false;
+    assert(!ds4_session_vision_prefix_matches(s, images, 2));
+    assert(!ds4_session_rebase_vision_state(s, images, 2));
+    free(s);
+}
+
 static void test_rewind(void) {
     ds4_engine e = { .backend = DS4_BACKEND_CPU };
     ds4_session *s = calloc(1, sizeof(*s));
@@ -342,6 +410,7 @@ static void test_glm_spec_rollback(void) {
 #endif
 
 int main(void) {
+    test_vision_prefix();
     test_rewind();
     test_session_memory();
     test_payload_tokens();

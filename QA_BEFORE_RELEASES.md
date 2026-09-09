@@ -1209,6 +1209,20 @@ clients.
   checking tool arguments, coherent output and context isolation. Record any
   necessary rebuild and its latency rather than counting a working tool alone
   as proof that prefix matching works.
+- With vision enabled, run `python3 tests/test_server_vision_cache.py --url
+  http://127.0.0.1:8000 --output /tmp/vision-cache-qa` against an otherwise idle
+  server. Repeat for GLM and DeepSeek, with ordinary and batched sessions.
+  Appending an image must retain the matching text/image prefix; replaying old
+  images must reuse their encoder output. Changed, removed or reordered old
+  images must not reuse incompatible KV. Include visible-history replay that
+  omits hidden reasoning, concurrent requests, and a roughly 50K-token prefix
+  (`--archive-lines 4200 --append-only`, with a sufficiently large `--ctx`).
+- Run `python3 tests/test_server_vision_agent.py --url http://127.0.0.1:8000
+  --pi /path/to/pi --output /tmp/vision-agent-qa` for both vision models. Pi must
+  actually read the two images, edit the program and pass the independent
+  output checks through Chat Completions, Responses and Anthropic. Image tool
+  results must arrive as images, not disappear or become literal placeholders.
+  Check cached-token accounting after every image-bearing tool continuation.
 - Test SSE streaming with thinking enabled and disabled.
 - Test keepalive during long prefill and confirm clients do not time out.
 - In batched mode, close clients while their requests are queued, prefilling,
@@ -1259,6 +1273,22 @@ The agent is the most stateful component.  Test it manually, not only by build.
   long tool call.  After `Stopped by user`, typing a new prompt must work.
 - Queue messages while the model is busy.  Queued messages must not skip tool
   execution; after tool results, the queued user text must be provided.
+- Force context pressure with `python3 tests/test_agent_compaction.py --binary
+  ./ds4-agent --model MODEL.gguf --vision VISION.gguf --ctx 4096
+  --output /tmp/agent-compaction-qa` (requires `pyte` and a C compiler; use 8192
+  for DeepSeek). Check nearly full input, mid-response compaction, the compiled
+  code oracle, output-budget accounting, oversized-input rejection and a real
+  tool task afterward. An unfinished assistant response must resume without
+  dropping partial words or code lines. An unfinished tool call must never run.
+  Repeat with `--think --tokens 3000`, GLM `--mtp`, and DeepSeek
+  `--dspark MATCHING_SUPPORT.gguf`. Summaries must record unfinished work,
+  not invent its solution; validate the resulting code independently.
+- Restore an already full session saved by the previous release and continue a
+  coding task. Summary generation must have reserved space or summarize a
+  bounded prefix while retaining every unsummarized token. Cancel compaction
+  and continue again; do not lose the original conversation on failure. Repeat
+  manual compaction, queued input, save/restore and thinking-enabled generation.
+  Check task completion and constraints, not just the absence of an error.
 - Read/search/edit/write tools:
   create a temp project and ask for edits. By default, verify that exact old/new
   replacements work and the tool prompt does not advertise `[upto]`. In a
@@ -1303,6 +1333,28 @@ The agent is the most stateful component.  Test it manually, not only by build.
   test multiline prompt editing, history navigation, queued prompt display,
   status bar fill to terminal width, syntax highlighting in Markdown/code blocks,
   and SSH/remote terminal flicker.
+
+September 8 focused regression pass on M5 Max IT, using GLM 5.3 Flash Q2 and
+DeepSeek Flash Vision Exp mixed Q2/Q4 with their vision encoders:
+
+- Both models passed the image-prefix suite and Pi editing tasks through Chat
+  Completions, Responses and Anthropic. Changed, removed and reordered images
+  invalidated the old prefix; unchanged images reused their encoder output.
+- At 56,035 GLM and 53,615 DeepSeek initial prompt tokens, adding each image
+  retained the entire old frontier. Final short follow-ups took 0.252 and
+  0.281 seconds respectively, with 58,268 and 54,442 cached tokens.
+- Forced 4K/8K compaction passed real tool tasks and an 80-function compiled
+  code oracle, including thinking, GLM MTP and DeepSeek DSpark. A partial write
+  had no side effects before retry and then produced all 300 expected lines.
+  Full older-session restore, cancelled compaction, images across compaction,
+  queued input and subsequent editing also passed.
+- Frontend/session unit tests, terminal PTY tests and ASan/UBSan-instrumented
+  frontend tests passed. Builds were warning-free. This was not a full release
+  matrix: CUDA, ROCm, TP and the reported 100K M3 Ultra setup were not tested.
+- A separate DSpark stop-boundary rewind can still force a prefix rebuild.
+  The same short prose/tool test reproduced identical rebuilds with both the
+  old and fixed agents. Do not mistake compaction correctness for fixing this
+  pre-existing speculative-cache performance limitation.
 
 ## 14. Download Script And Model Files
 

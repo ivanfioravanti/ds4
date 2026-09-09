@@ -434,11 +434,21 @@ int ds4_session_sync_multimodal(ds4_session *s,
                                 size_t image_count,
                                 char *err,
                                 size_t errlen);
-/* Return true only when every image that conditioned the live checkpoint has
- * the same token span and embedding fingerprint in the supplied prompt. */
+/* A reusable image prefix has unchanged spans/fingerprints for all historical
+ * images, with any new images starting at or after the live token frontier.
+ * The caller must also check the token prefix. Invalid checkpoints never match. */
+bool ds4_session_vision_prefix_matches(const ds4_session *s,
+                                       const ds4_vision_span *images,
+                                       size_t image_count);
+/* Like the prefix check, but also require exactly the same image count. */
 bool ds4_session_vision_state_matches(const ds4_session *s,
                                       const ds4_vision_span *images,
                                       size_t image_count);
+/* Restore image positions from an independently authenticated live continuation
+ * (for example, matching tool-call IDs). Checks every fingerprint and row count;
+ * on failure, leaves spans unchanged. This does not verify the text history. */
+bool ds4_session_rebase_vision_state(const ds4_session *s,
+                                     ds4_vision_span *images, size_t image_count);
 /* True while a session contains, or is actively syncing, image-conditioned
  * state. Such state must not be written to the text-keyed disk KV cache. */
 bool ds4_session_has_vision_state(const ds4_session *s);

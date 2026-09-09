@@ -699,6 +699,9 @@ static void random_tool_id(char *dst, size_t dstlen, api_style api) {
 typedef struct server server;
 static void server_inference_lock(server *s);
 static void server_inference_unlock(server *s);
+static bool server_encode_image(server *s, const server_image_input *input,
+                                ds4_vision_embedding *out,
+                                char *err, size_t errlen);
 
 typedef struct {
     char *id;
@@ -781,6 +784,7 @@ typedef struct {
     server_model_syntax model_syntax;
     ds4_tokens prompt;
     ds4_vision_span *images;
+    char (*image_markers)[SERVER_IMAGE_MARKER_BYTES];
     size_t image_count;
     char *model;
     bool model_from_request;
@@ -981,6 +985,7 @@ static void request_free(request *r) {
     for (size_t i = 0; i < r->image_count; i++)
         ds4_vision_embedding_free(&r->images[i].embedding);
     free(r->images);
+    free(r->image_markers);
     free(r->model);
     for (int i = 0; i < r->stops.len; i++) free(r->stops.v[i]);
     free(r->stops.v);
@@ -2150,12 +2155,13 @@ static bool parse_anthropic_image_source(const char **p,
     return true;
 }
 
+static bool parse_anthropic_content(const char **p, chat_msg *msg, bool allow_tools);
+
 /* Anthropic content is block-structured, while the engine consumes one compact
  * chat_msg per role.  Parsing collapses text/thinking into strings, converts
  * assistant tool_use blocks to tool_calls, and keeps tool_result blocks as
  * escaped text because DS4 sees tool results in its chat template. */
-static bool parse_anthropic_content_block(const char **p, const char *role, chat_msg *msg) {
-    (void)role;
+static bool parse_anthropic_content_block(const char **p, bool allow_tools, chat_msg *msg) {
     if (**p != '{') return false;
     (*p)++;
     char *type = NULL;
@@ -2210,7 +2216,7 @@ static bool parse_anthropic_content_block(const char **p, const char *role, chat
                 goto bad;
             }
         } else if (!strcmp(key, "content")) {
-            if (!json_content_replace(p, &tool_result)) {
+            if (!json_raw_value_replace(p, &tool_result)) {
                 free(key);
                 goto bad;
             }
@@ -2237,6 +2243,8 @@ static bool parse_anthropic_content_block(const char **p, const char *role, chat
      * caller may not know the enclosing role yet while parsing content blocks.
      * Classify protocol blocks by their own "type" field; later rendering and
      * validation use the final message role. */
+    if (!allow_tools && (!type || (strcmp(type, "text") && strcmp(type, "image"))))
+        goto bad;
     if (type && !strcmp(type, "tool_use")) {
         tool_call tc = {0};
         tc.id = id ? xstrdup(id) : NULL;
@@ -2244,14 +2252,29 @@ static bool parse_anthropic_content_block(const char **p, const char *role, chat
         tc.arguments = input ? xstrdup(input) : xstrdup("{}");
         tool_calls_push(&msg->calls, tc);
     } else if (type && !strcmp(type, "tool_result")) {
+        chat_msg nested = {0};
+        const char *content = tool_result ? tool_result : "\"\"";
+        if (!parse_anthropic_content(&content, &nested, false)) {
+            chat_msg_free(&nested);
+            goto bad;
+        }
         chat_msg_add_tool_call_id(msg, id);
         buf b = {0};
         buf_puts(&b, msg->content ? msg->content : "");
         buf_puts(&b, "<tool_result>");
-        append_tool_result_text(&b, tool_result);
+        append_tool_result_text(&b, nested.content);
         buf_puts(&b, "</tool_result>");
         free(msg->content);
         msg->content = buf_take(&b);
+        if (nested.images.len) {
+            size_t total = msg->images.len + nested.images.len;
+            msg->images.v = xrealloc(msg->images.v, total * sizeof(msg->images.v[0]));
+            memcpy(msg->images.v + msg->images.len, nested.images.v,
+                   nested.images.len * sizeof(msg->images.v[0]));
+            msg->images.len = msg->images.cap = total;
+            nested.images.len = 0;
+        }
+        chat_msg_free(&nested);
     } else if (type && !strcmp(type, "image")) {
         char marker[SERVER_IMAGE_MARKER_BYTES];
         if (!source_type || strcmp(source_type, "base64") ||
@@ -2301,14 +2324,14 @@ bad:
     return false;
 }
 
-static bool parse_anthropic_content(const char **p, chat_msg *msg) {
+static bool parse_anthropic_content(const char **p, chat_msg *msg, bool allow_tools) {
     json_ws(p);
     if (**p == '"') return json_string(p, &msg->content);
     if (json_lit(p, "null")) {
         msg->content = xstrdup("");
         return true;
     }
-    if (**p != '[') return json_skip_value(p);
+    if (**p != '[') return allow_tools ? json_skip_value(p) : false;
     (*p)++;
     json_ws(p);
     while (**p && **p != ']') {
@@ -2322,7 +2345,7 @@ static bool parse_anthropic_content(const char **p, chat_msg *msg) {
             msg->content = buf_take(&b);
             free(s);
         } else if (**p == '{') {
-            if (!parse_anthropic_content_block(p, msg->role ? msg->role : "", msg)) return false;
+            if (!parse_anthropic_content_block(p, allow_tools, msg)) return false;
         } else if (!json_skip_value(p)) {
             return false;
         }
@@ -2364,7 +2387,7 @@ static bool parse_anthropic_messages(const char **p, chat_msgs *msgs) {
             } else if (!strcmp(key, "content")) {
                 free(msg.content);
                 msg.content = NULL;
-                if (!parse_anthropic_content(p, &msg)) {
+                if (!parse_anthropic_content(p, &msg, true)) {
                     free(key);
                     goto fail;
                 }
@@ -3409,9 +3432,7 @@ static bool request_tokenize_multimodal_prompt(ds4_engine *e, server *s,
     bool ok = true;
     server_inference_lock(s);
     for (size_t i = 0; i < count; i++) {
-        if (!ds4_engine_vision_encode_memory(e, inputs[i]->encoded,
-                                             inputs[i]->encoded_len,
-                                             &embeddings[i], err, errlen)) {
+        if (!server_encode_image(s, inputs[i], &embeddings[i], err, errlen)) {
             ok = false;
             break;
         }
@@ -3420,6 +3441,7 @@ static bool request_tokenize_multimodal_prompt(ds4_engine *e, server *s,
     if (!ok) goto done;
 
     r->images = xmalloc(count * sizeof(r->images[0]));
+    r->image_markers = xmalloc(count * sizeof(r->image_markers[0]));
     memset(r->images, 0, count * sizeof(r->images[0]));
     const char *cursor = r->prompt_text;
     for (size_t i = 0; i < count; i++) {
@@ -3438,6 +3460,7 @@ static bool request_tokenize_multimodal_prompt(ds4_engine *e, server *s,
             break;
         }
         r->image_count++;
+        memcpy(r->image_markers[i], inputs[i]->marker, sizeof(r->image_markers[i]));
         cursor = marker + strlen(inputs[i]->marker);
     }
     if (ok) ds4_tokenize_rendered_chat(e, cursor, &r->prompt);
@@ -3452,6 +3475,8 @@ done:
         for (size_t i = 0; i < r->image_count; i++)
             ds4_vision_embedding_free(&r->images[i].embedding);
         free(r->images);
+        free(r->image_markers);
+        r->image_markers = NULL;
         r->images = NULL;
         r->image_count = 0;
     }
@@ -4454,7 +4479,7 @@ static bool parse_responses_input(const char **p, chat_msgs *msgs,
         char *result = NULL;
         char *tools_json = NULL;
         char *status_str = NULL;
-        server_image_inputs content_images = {0};
+        server_image_inputs content_images = {0}, output_images = {0};
         json_ws(p);
         while (**p && **p != '}') {
             char *key = NULL;
@@ -4513,9 +4538,10 @@ static bool parse_responses_input(const char **p, chat_msgs *msgs,
                     goto item_fail;
                 }
             } else if (!strcmp(key, "output")) {
+                server_image_inputs_free(&output_images);
                 json_ws(p);
                 if (**p == '[') {
-                    if (!parse_responses_content_array_replace(p, &output)) {
+                    if (!parse_responses_content_array_multimodal(p, &output, &output_images)) {
                         free(key);
                         goto item_fail;
                     }
@@ -4600,6 +4626,7 @@ item_fail:
             free(tools_json);
             free(status_str);
             server_image_inputs_free(&content_images);
+            server_image_inputs_free(&output_images);
             buf_free(&pending_reasoning);
             return false;
         }
@@ -4620,6 +4647,7 @@ item_fail:
             free(tools_json);
             free(status_str);
             server_image_inputs_free(&content_images);
+            server_image_inputs_free(&output_images);
             goto fail;
         }
         (*p)++;
@@ -4648,11 +4676,14 @@ item_fail:
             free(tools_json);
             free(status_str);
             server_image_inputs_free(&content_images);
+            server_image_inputs_free(&output_images);
             buf_free(&pending_reasoning);
             return false;
         }
-        if (content_images.len &&
-            (strcmp(t, "message") || (role && strcmp(role, "user")))) {
+        if ((content_images.len &&
+             (strcmp(t, "message") || (role && strcmp(role, "user")))) ||
+            (output_images.len && strcmp(t, "function_call_output") &&
+             strcmp(t, "custom_tool_call_output"))) {
             free(type);
             free(role);
             free(content);
@@ -4669,6 +4700,7 @@ item_fail:
             free(tools_json);
             free(status_str);
             server_image_inputs_free(&content_images);
+            server_image_inputs_free(&output_images);
             buf_free(&pending_reasoning);
             return false;
         }
@@ -4750,6 +4782,8 @@ item_fail:
             msg.role = xstrdup("tool");
             msg.content = output ? output : xstrdup("");
             output = NULL;
+            msg.images = output_images;
+            memset(&output_images, 0, sizeof(output_images));
             if (call_id || item_id) {
                 chat_msg_add_tool_call_id(&msg, call_id ? call_id : item_id);
             }
@@ -4829,6 +4863,7 @@ item_fail:
                     free(tools_json);
                     free(status_str);
                     server_image_inputs_free(&content_images);
+                    server_image_inputs_free(&output_images);
                     buf_free(&pending_reasoning);
                     return false;
                 }
@@ -4870,6 +4905,7 @@ item_fail:
             free(tools_json);
             free(status_str);
             server_image_inputs_free(&content_images);
+            server_image_inputs_free(&output_images);
             buf_free(&pending_reasoning);
             return false;
         }
@@ -4890,6 +4926,7 @@ item_fail:
         free(tools_json);
         free(status_str);
         server_image_inputs_free(&content_images);
+        server_image_inputs_free(&output_images);
         json_ws(p);
         if (**p == ',') (*p)++;
         json_ws(p);
@@ -9571,6 +9608,46 @@ typedef struct {
     uint64_t scan_clock;
 } tool_memory;
 
+/* Image markers have request-local nonces. Normalize only actual marker spans
+ * for visible-history matching, and retain their byte offsets so literal text
+ * cannot impersonate an image. Full fingerprints are checked against live KV
+ * before any prefix is reused. Normalization preserves all byte offsets. */
+typedef struct {
+    size_t count;
+    size_t offsets[16];
+} visible_image_key;
+
+static char *visible_prompt_key(const request *req, const char *text,
+                                 visible_image_key *images) {
+    memset(images, 0, sizeof(*images));
+    if (!req || !text || req->image_count > 16 ||
+        (req->image_count && !req->image_markers)) return NULL;
+    char *key = xstrdup(text);
+    const char *cursor = text;
+    for (size_t i = 0; i < req->image_count; i++) {
+        const char *marker = strstr(cursor, req->image_markers[i]);
+        size_t len = strlen(req->image_markers[i]);
+        if (!marker || !len) {
+            free(key);
+            return NULL;
+        }
+        images->offsets[images->count++] = (size_t)(marker - text);
+        memset(key + (marker - text), '\036', len);
+        cursor = marker + len;
+    }
+    return key;
+}
+
+static bool visible_image_prefix_matches(const visible_image_key *incoming,
+                                           const visible_image_key *old,
+                                           size_t boundary) {
+    if (incoming->count < old->count) return false;
+    for (size_t i = 0; i < old->count; i++)
+        if (incoming->offsets[i] != old->offsets[i]) return false;
+    return incoming->count == old->count ||
+           incoming->offsets[old->count] >= boundary;
+}
+
 typedef struct {
     bool valid;
     /* Token frontier of a live assistant tool-call turn. Continuing from this
@@ -9582,6 +9659,7 @@ typedef struct {
      * Anthropic currently uses only the call-id side of the state. */
     char *visible_text;
     size_t visible_len;
+    visible_image_key images;
     /* Tool-call ids generated at the same live frontier. A following tool
      * result for these ids is a direct protocol continuation and should not
      * trigger prompt-prefix matching or checkpoint canonicalization. */
@@ -9597,6 +9675,7 @@ typedef struct {
     int live_tokens;
     char *visible_text;
     size_t visible_len;
+    visible_image_key images;
 } visible_live_state;
 
 struct server_slot {
@@ -9621,6 +9700,101 @@ struct server_slot {
     char decode_err[160];
 };
 
+#define SERVER_IMAGE_CACHE_ENTRIES 32
+#define SERVER_IMAGE_CACHE_BYTES (128u * 1024u * 1024u)
+
+typedef struct {
+    uint8_t *encoded;
+    size_t encoded_len;
+    ds4_vision_embedding embedding;
+    size_t data_bytes;
+    uint64_t used;
+} server_image_cache_entry;
+
+typedef struct {
+    server_image_cache_entry entries[SERVER_IMAGE_CACHE_ENTRIES];
+    size_t bytes;
+    uint64_t clock;
+} server_image_cache;
+
+static void server_image_cache_remove(server_image_cache *cache,
+                                      server_image_cache_entry *entry) {
+    cache->bytes -= entry->encoded_len + entry->data_bytes;
+    free(entry->encoded);
+    ds4_vision_embedding_free(&entry->embedding);
+    memset(entry, 0, sizeof(*entry));
+}
+
+static void server_image_cache_clear(server_image_cache *cache) {
+    for (size_t i = 0; i < SERVER_IMAGE_CACHE_ENTRIES; i++)
+        server_image_cache_remove(cache, &cache->entries[i]);
+    cache->clock = 0;
+}
+
+static bool server_image_cache_get(server_image_cache *cache,
+                                   const server_image_input *input,
+                                   ds4_vision_embedding *out) {
+    for (size_t i = 0; i < SERVER_IMAGE_CACHE_ENTRIES; i++) {
+        server_image_cache_entry *entry = &cache->entries[i];
+        if (!entry->encoded || entry->encoded_len != input->encoded_len ||
+            memcmp(entry->encoded, input->encoded, input->encoded_len)) continue;
+        float *data = malloc(entry->data_bytes);
+        if (!data) return false;
+        memcpy(data, entry->embedding.data, entry->data_bytes);
+        *out = entry->embedding;
+        out->data = data;
+        entry->used = ++cache->clock;
+        return true;
+    }
+    return false;
+}
+
+/* Cache only successful encodes. Exact byte keys avoid trusting a client hash;
+ * callers own a copy, since DeepSeek expands the natural embedding in place. */
+static void server_image_cache_put(server_image_cache *cache,
+                                   const server_image_input *input,
+                                   const ds4_vision_embedding *embedding,
+                                   uint32_t dim, size_t budget) {
+    if (!embedding->data || !dim || !embedding->token_count ||
+        !input->encoded_len ||
+        embedding->token_count > budget / sizeof(float) / dim) return;
+    size_t bytes = (size_t)embedding->token_count * dim * sizeof(float);
+    if (input->encoded_len > budget - bytes) return;
+    size_t total = input->encoded_len + bytes;
+    server_image_cache_entry *dest;
+    for (;;) {
+        dest = &cache->entries[0];
+        for (size_t i = 1; i < SERVER_IMAGE_CACHE_ENTRIES; i++) {
+            if (cache->entries[i].used < dest->used) dest = &cache->entries[i];
+        }
+        if (!dest->encoded && cache->bytes <= budget - total) break;
+        if (!dest->encoded) {
+            for (size_t i = 0; i < SERVER_IMAGE_CACHE_ENTRIES; i++) {
+                server_image_cache_entry *entry = &cache->entries[i];
+                if (entry->encoded && (!dest->encoded || entry->used < dest->used))
+                    dest = entry;
+            }
+        }
+        server_image_cache_remove(cache, dest);
+    }
+    uint8_t *encoded = malloc(input->encoded_len);
+    float *data = malloc((size_t)bytes);
+    if (!encoded || !data) {
+        free(encoded);
+        free(data);
+        return;
+    }
+    memcpy(encoded, input->encoded, input->encoded_len);
+    memcpy(data, embedding->data, (size_t)bytes);
+    *dest = (server_image_cache_entry) {
+        .encoded = encoded, .encoded_len = input->encoded_len,
+        .embedding = *embedding, .data_bytes = (size_t)bytes,
+        .used = ++cache->clock,
+    };
+    dest->embedding.data = data;
+    cache->bytes += total;
+}
+
 static bool id_list_contains(const stop_list *ids, const char *id);
 static void id_list_push_unique(stop_list *ids, const char *id);
 
@@ -9636,6 +9810,7 @@ struct server {
     int default_tokens;
     kv_disk_cache kv;
     tool_memory tool_mem;
+    server_image_cache image_cache; /* Protected by inference_mu. */
     bool disable_exact_dsml_tool_replay;
     bool enable_cors;
     pthread_mutex_t tool_mu;
@@ -9667,6 +9842,25 @@ static void server_inference_lock(server *s) {
 
 static void server_inference_unlock(server *s) {
     pthread_mutex_unlock(&s->inference_mu);
+}
+
+/* The caller holds inference_mu across cache lookup and encoder execution. */
+static bool server_encode_image(server *s, const server_image_input *input,
+                                ds4_vision_embedding *out,
+                                char *err, size_t errlen) {
+    if (server_image_cache_get(&s->image_cache, input, out)) {
+        server_log(DS4_LOG_KVCACHE, "ds4-server: vision embedding cache hit");
+        return true;
+    }
+    if (!ds4_engine_vision_encode_memory(s->engine, input->encoded,
+                                         input->encoded_len, out, err, errlen))
+        return false;
+    server_image_cache_put(&s->image_cache, input, out,
+                            4096, /* Both supported vision encoders emit 4096-wide rows. */
+                            SERVER_IMAGE_CACHE_BYTES);
+    server_log(DS4_LOG_KVCACHE, "ds4-server: vision embedding encoded; cache=%zu bytes",
+               s->image_cache.bytes);
+    return true;
 }
 
 /* Jobs are stack-owned by the client thread.  A resident-slot worker signals
@@ -9910,6 +10104,7 @@ static void live_tool_state_clear_locked(live_tool_state *st) {
     free(st->visible_text);
     st->visible_text = NULL;
     st->visible_len = 0;
+    memset(&st->images, 0, sizeof(st->images));
     st->valid = false;
     st->live_tokens = 0;
 }
@@ -9926,6 +10121,7 @@ static void visible_live_clear_locked(visible_live_state *st) {
     free(st->visible_text);
     st->visible_text = NULL;
     st->visible_len = 0;
+    memset(&st->images, 0, sizeof(st->images));
     st->live_tokens = 0;
     st->valid = false;
 }
@@ -9944,32 +10140,38 @@ static void thinking_live_clear(server *s, server_slot *slot) {
 }
 
 static void thinking_live_remember(server *s, server_slot *slot,
-                                   const char *visible_text) {
+                                   const char *visible_text, const request *req) {
     if (!s || !slot || !visible_text || !visible_text[0]) return;
+    visible_image_key images;
+    char *key = visible_prompt_key(req, visible_text, &images);
     pthread_mutex_lock(&s->tool_mu);
     visible_live_clear_locked(&slot->thinking_live);
-    slot->thinking_live.visible_text = xstrdup(visible_text);
-    slot->thinking_live.visible_len = strlen(visible_text);
+    slot->thinking_live.visible_text = key;
+    slot->thinking_live.visible_len = key ? strlen(key) : 0;
+    slot->thinking_live.images = images;
     slot->thinking_live.live_tokens = ds4_session_pos(slot->session);
-    slot->thinking_live.valid = true;
+    slot->thinking_live.valid = key != NULL;
     pthread_mutex_unlock(&s->tool_mu);
 }
 
 static void responses_live_remember(server *s, server_slot *slot,
                                     const char *visible_text,
-                                    const tool_calls *calls) {
+                                    const tool_calls *calls, const request *req) {
     if (!s || !slot || !visible_text || !visible_text[0]) return;
+    visible_image_key images;
+    char *key = visible_prompt_key(req, visible_text, &images);
     pthread_mutex_lock(&s->tool_mu);
     live_tool_state_clear_locked(&slot->responses_live);
-    slot->responses_live.visible_text = xstrdup(visible_text);
-    slot->responses_live.visible_len = strlen(visible_text);
+    slot->responses_live.visible_text = key;
+    slot->responses_live.visible_len = key ? strlen(key) : 0;
+    slot->responses_live.images = images;
     if (calls) {
         for (int i = 0; i < calls->len; i++) {
             id_list_push_unique(&slot->responses_live.call_ids, calls->v[i].id);
         }
     }
     slot->responses_live.live_tokens = ds4_session_pos(slot->session);
-    slot->responses_live.valid = true;
+    slot->responses_live.valid = key != NULL;
     pthread_mutex_unlock(&s->tool_mu);
 }
 
@@ -10890,6 +11092,57 @@ static int kv_cache_try_load(server *s, server_slot *slot, const request *req,
                                   req && req->api == API_RESPONSES);
 }
 
+/* A text-only suffix tokenizer would turn image markers into literal text.
+ * Keep the exact live tokens and splice each new image's already-built token
+ * block into the suffix. Historical image positions follow the live frontier,
+ * which may retain reasoning omitted from a client's visible replay. */
+static bool build_live_prompt_suffix(server *s, server_slot *slot,
+                                      const request *req, const char *suffix,
+                                      ds4_tokens *out) {
+    const ds4_tokens *live = ds4_session_tokens(slot->session);
+    if (!live || !suffix || req->image_count > 16) return false;
+    ds4_vision_span spans[16];
+    size_t old_count = req->image_count;
+    for (size_t i = 0; i < req->image_count; i++) {
+        if (!req->image_markers) return false;
+        spans[i] = req->images[i];
+        if (old_count == req->image_count &&
+            strstr(suffix, req->image_markers[i])) old_count = i;
+    }
+    if (!ds4_session_rebase_vision_state(slot->session, spans, old_count)) return false;
+    ds4_tokens prompt = {0};
+    ds4_tokens_copy(&prompt, live);
+    const char *cursor = suffix;
+    const int wrapper = ds4_engine_is_glm_dsa(s->engine) ? 1 : 0;
+    for (size_t i = old_count; i < req->image_count; i++) {
+        const char *marker = strstr(cursor, req->image_markers[i]);
+        int64_t start = (int64_t)req->images[i].token_start - wrapper;
+        uint64_t end = (uint64_t)req->images[i].token_start +
+                        req->images[i].embedding.token_count + wrapper;
+        if (!marker || start < 0 || end > (uint64_t)req->prompt.len) {
+            ds4_tokens_free(&prompt);
+            return false;
+        }
+        char *text = xstrndup(cursor, (size_t)(marker - cursor));
+        ds4_tokenize_rendered_chat(s->engine, text, &prompt);
+        free(text);
+        spans[i].token_start = (uint32_t)(prompt.len + wrapper);
+        for (int64_t p = start; p < (int64_t)end; p++)
+            ds4_tokens_push(&prompt, req->prompt.v[p]);
+        cursor = marker + strlen(req->image_markers[i]);
+    }
+    ds4_tokenize_rendered_chat(s->engine, cursor, &prompt);
+    if (!ds4_session_vision_prefix_matches(slot->session, spans, req->image_count)) {
+        ds4_tokens_free(&prompt);
+        return false;
+    }
+    for (size_t i = 0; i < req->image_count; i++)
+        req->images[i].token_start = spans[i].token_start;
+    ds4_tokens_free(out);
+    *out = prompt;
+    return true;
+}
+
 static int live_text_prefix_prompt(server *s, server_slot *slot,
                                    const request *req,
                                    ds4_tokens *effective_prompt) {
@@ -10911,11 +11164,10 @@ static int live_text_prefix_prompt(server *s, server_slot *slot,
      * keep its sampled tokenization and tokenize only the request bytes that
      * come after it.  Reusing req->prompt's token suffix would be wrong: full
      * prompt BPE may have merged across this byte boundary. */
-    build_prompt_from_exact_prefix_and_text_suffix(
-        s->engine, live_tokens, req->prompt_text + live_text_len,
-        effective_prompt);
+    bool ok = build_live_prompt_suffix(s, slot, req, req->prompt_text + live_text_len,
+                                       effective_prompt);
     free(live_text);
-    return live_tokens->len;
+    return ok ? live_tokens->len : 0;
 }
 
 /* Tool-output-only Responses continuation.
@@ -10939,9 +11191,8 @@ static int responses_live_continuation_prompt(server *s, server_slot *slot,
     const ds4_tokens *live_tokens = ds4_session_tokens(slot->session);
     if (!live_tokens || live_tokens->len != live_pos) return 0;
 
-    build_prompt_from_exact_prefix_and_text_suffix(
-        s->engine, live_tokens, req->responses_live_suffix_text,
-        effective_prompt);
+    if (!build_live_prompt_suffix(s, slot, req, req->responses_live_suffix_text,
+                                  effective_prompt)) return 0;
     if (matched_ids) *matched_ids = req->responses_live_call_ids.len;
     return live_tokens->len;
 }
@@ -10967,9 +11218,8 @@ static int anthropic_live_continuation_prompt(server *s, server_slot *slot,
     const ds4_tokens *live_tokens = ds4_session_tokens(slot->session);
     if (!live_tokens || live_tokens->len != live_pos) return 0;
 
-    build_prompt_from_exact_prefix_and_text_suffix(
-        s->engine, live_tokens, req->anthropic_live_suffix_text,
-        effective_prompt);
+    if (!build_live_prompt_suffix(s, slot, req, req->anthropic_live_suffix_text,
+                                  effective_prompt)) return 0;
     if (matched_ids) *matched_ids = req->anthropic_live_call_ids.len;
     return live_tokens->len;
 }
@@ -10994,26 +11244,31 @@ static int responses_live_visible_prefix_prompt(server *s, server_slot *slot,
     if (!s || !slot || !req || !req->prompt_text || !effective_prompt) return 0;
     if (req->api != API_RESPONSES) return 0;
 
-    const size_t prompt_len = strlen(req->prompt_text);
+    visible_image_key images;
+    char *key = visible_prompt_key(req, req->prompt_text, &images);
+    if (!key) return 0;
+    const size_t prompt_len = strlen(key);
     size_t visible_len = 0;
     pthread_mutex_lock(&s->tool_mu);
     bool ok = slot->responses_live.valid &&
               slot->responses_live.live_tokens == live_pos &&
               slot->responses_live.visible_text &&
               slot->responses_live.visible_len < prompt_len &&
-              byte_prefix_match(req->prompt_text, prompt_len,
+              visible_image_prefix_matches(&images, &slot->responses_live.images,
+                                             slot->responses_live.visible_len) &&
+              byte_prefix_match(key, prompt_len,
                                 slot->responses_live.visible_text,
                                 slot->responses_live.visible_len);
     if (ok) visible_len = slot->responses_live.visible_len;
     pthread_mutex_unlock(&s->tool_mu);
+    free(key);
     if (!ok) return 0;
 
     const ds4_tokens *live_tokens = ds4_session_tokens(slot->session);
     if (!live_tokens || live_tokens->len != live_pos) return 0;
 
-    build_prompt_from_exact_prefix_and_text_suffix(
-        s->engine, live_tokens, req->prompt_text + visible_len,
-        effective_prompt);
+    if (!build_live_prompt_suffix(s, slot, req, req->prompt_text + visible_len,
+                                  effective_prompt)) return 0;
     return live_tokens->len;
 }
 
@@ -11037,26 +11292,31 @@ static int thinking_live_visible_prefix_prompt(server *s, server_slot *slot,
     if (!s || !slot || !req || !req->prompt_text || !effective_prompt) return 0;
     if (req->kind != REQ_CHAT || req->api == API_RESPONSES) return 0;
 
-    const size_t prompt_len = strlen(req->prompt_text);
+    visible_image_key images;
+    char *key = visible_prompt_key(req, req->prompt_text, &images);
+    if (!key) return 0;
+    const size_t prompt_len = strlen(key);
     size_t visible_len = 0;
     pthread_mutex_lock(&s->tool_mu);
     bool ok = slot->thinking_live.valid &&
               slot->thinking_live.live_tokens == live_pos &&
               slot->thinking_live.visible_text &&
               slot->thinking_live.visible_len < prompt_len &&
-              byte_prefix_match(req->prompt_text, prompt_len,
+              visible_image_prefix_matches(&images, &slot->thinking_live.images,
+                                             slot->thinking_live.visible_len) &&
+              byte_prefix_match(key, prompt_len,
                                 slot->thinking_live.visible_text,
                                 slot->thinking_live.visible_len);
     if (ok) visible_len = slot->thinking_live.visible_len;
     pthread_mutex_unlock(&s->tool_mu);
+    free(key);
     if (!ok) return 0;
 
     const ds4_tokens *live_tokens = ds4_session_tokens(slot->session);
     if (!live_tokens || live_tokens->len != live_pos) return 0;
 
-    build_prompt_from_exact_prefix_and_text_suffix(
-        s->engine, live_tokens, req->prompt_text + visible_len,
-        effective_prompt);
+    if (!build_live_prompt_suffix(s, slot, req, req->prompt_text + visible_len,
+                                  effective_prompt)) return 0;
     return live_tokens->len;
 }
 
@@ -11779,7 +12039,7 @@ static int server_multimodal_resume_pos(ds4_session *session,
     const int common = ds4_session_common_prefix(session, prompt);
     return server_multimodal_resume_frontier(
         live, common, prompt->len,
-        ds4_session_vision_state_matches(session, images, image_count));
+        ds4_session_vision_prefix_matches(session, images, image_count));
 }
 
 static int server_session_sync_multimodal(server *s, server_slot *slot,
@@ -12170,9 +12430,14 @@ static char *build_toolless_thinking_visible_text(const request *r,
 
     buf visible = {0};
     buf_append(&visible, r->prompt_text, pt_len - tag_len);
-    buf_puts(&visible, "</think>");
-    buf_puts(&visible, content ? content : "");
-    buf_puts(&visible, "<｜end▁of▁sentence｜>");
+    if (r->model_syntax == SERVER_MODEL_SYNTAX_GLM) {
+        buf_puts(&visible, "<think></think>");
+        append_trimmed_text(&visible, content);
+    } else {
+        buf_puts(&visible, "</think>");
+        buf_puts(&visible, content ? content : "");
+        buf_puts(&visible, "<｜end▁of▁sentence｜>");
+    }
     return buf_take(&visible);
 }
 
@@ -12182,7 +12447,7 @@ static void remember_thinking_checkpoint(server *s, server_slot *slot,
     char *visible = build_toolless_thinking_visible_text(&j->req, content);
     if (!visible) return;
 
-    thinking_live_remember(s, slot, visible);
+    thinking_live_remember(s, slot, visible, &j->req);
     server_log(DS4_LOG_KVCACHE,
                "ds4-server: thinking live checkpoint remembered ctx=%s live=%d visible=%zu",
                ctx, ds4_session_pos(slot->session), strlen(visible));
@@ -12226,7 +12491,7 @@ static bool remember_qwen_tool_turn_visible_checkpoint(server *s, server_slot *s
     char *visible = build_qwen_tool_turn_visible_text(&j->req, finish,
                                                      inside_thinking, content, calls);
     if (!visible) return false;
-    thinking_live_remember(s, slot, visible);
+    thinking_live_remember(s, slot, visible, &j->req);
     server_log(DS4_LOG_KVCACHE,
                "ds4-server: qwen tool-turn visible checkpoint remembered ctx=%s live=%d visible=%zu",
                ctx, ds4_session_pos(slot->session),
@@ -12638,7 +12903,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
     const int old_pos = ds4_session_pos(slot->session);
     const int common = ds4_session_common_prefix(slot->session, &j->req.prompt);
     const bool live_vision_match =
-        ds4_session_vision_state_matches(slot->session,
+        ds4_session_vision_prefix_matches(slot->session,
                                          j->req.images, j->req.image_count);
     pthread_mutex_unlock(&s->inference_mu);
     trace_cache_diag cache_diag = {0};
@@ -12659,9 +12924,9 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
      * exact token-prefix match.  Exact token/text/disk matching remains the
      * fallback when the live state is absent or no longer describes the
      * request. */
-    int cached = live_vision_match ?
+    int cached =
         responses_live_visible_prefix_prompt(s, slot, &j->req, old_pos,
-                                              &effective_prompt) : 0;
+                                              &effective_prompt);
     const char *cache_source = cached > 0 ? "responses-visible" : "none";
     if (cached > 0) {
         responses_live_match = "visible-prefix";
@@ -12672,7 +12937,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
             responses_live_match_ids = j->req.responses_live_call_ids.len;
         }
     }
-    if (cached == 0 && live_vision_match) {
+    if (cached == 0) {
         cached = responses_live_continuation_prompt(s, slot, &j->req, old_pos,
                                                     &effective_prompt,
                                                     &responses_live_match_ids);
@@ -12682,7 +12947,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
     if (cached > 0) {
         responses_live_continuation = true;
         prompt_for_sync = &effective_prompt;
-    } else if (live_vision_match) {
+    } else {
         cached = anthropic_live_continuation_prompt(s, slot, &j->req, old_pos,
                                                     &effective_prompt,
                                                     &anthropic_live_match_ids);
@@ -12721,7 +12986,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
                 ds4_session_common_prefix(slot->session, &j->req.prompt) ==
                     rewind_to &&
                 (!multimodal ||
-                 ds4_session_vision_state_matches(slot->session,
+                 ds4_session_vision_prefix_matches(slot->session,
                                                   j->req.images,
                                                   j->req.image_count));
             pthread_mutex_unlock(&s->inference_mu);
@@ -12742,7 +13007,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
             cache_source = cached > 0 ? "memory-token" : "none";
         }
     }
-    if (cached == 0 && live_vision_match) {
+    if (cached == 0) {
         int thinking_cached =
             thinking_live_visible_prefix_prompt(s, slot, &j->req, old_pos,
                                                 &effective_prompt);
@@ -12756,7 +13021,7 @@ static void generate_job_inner(server *s, server_slot *slot, job *j) {
     int disk_cached = 0;
     char *disk_cache_path = NULL;
     uint8_t disk_cache_ext_flags = 0;
-    if (cached == 0 && live_vision_match) {
+    if (cached == 0) {
         int text_cached = live_text_prefix_prompt(s, slot, &j->req,
                                                   &effective_prompt);
         if (text_cached > 0) {
@@ -13732,7 +13997,7 @@ decode_again:
             buf_puts(&visible, j->req.prompt_text ? j->req.prompt_text : "");
             buf_puts(&visible, visible_suffix ? visible_suffix : "");
             responses_live_remember(s, slot, visible.ptr ? visible.ptr : "",
-                                    parsed_calls.len ? &parsed_calls : NULL);
+                                    parsed_calls.len ? &parsed_calls : NULL, &j->req);
             buf_free(&visible);
             free(visible_suffix);
         } else {
@@ -13968,8 +14233,32 @@ static int job_slot_score(server *s, server_slot *slot, const job *j,
     if (!s || !slot || !j || slot->busy || slot->assigned) return INT_MIN;
     if (required_slot >= 0 && slot->id != required_slot) return INT_MIN;
     if (required_slot == slot->id) return INT_MAX;
+    /* A visible replay can omit sampled reasoning and shift image positions.
+     * Select its live slot before falling back to token-prefix scoring. The
+     * continuation builder independently verifies image identities on reuse.
+     * The dispatcher already holds tool_mu here. */
+    int live_pos = ds4_session_pos(slot->session);
+    const request *req = &j->req;
+    visible_image_key images;
+    char *key = req->prompt_text ? visible_prompt_key(req, req->prompt_text, &images) : NULL;
+    bool visible_match = false;
+    if (key && req->api == API_RESPONSES) {
+        const live_tool_state *state = &slot->responses_live;
+        visible_match = state->valid && state->live_tokens == live_pos &&
+            state->visible_text && state->visible_len < strlen(key) &&
+            visible_image_prefix_matches(&images, &state->images, state->visible_len) &&
+            byte_prefix_match(key, strlen(key), state->visible_text, state->visible_len);
+    } else if (key && req->kind == REQ_CHAT) {
+        const visible_live_state *state = &slot->thinking_live;
+        visible_match = state->valid && state->live_tokens == live_pos &&
+            state->visible_text && state->visible_len < strlen(key) &&
+            visible_image_prefix_matches(&images, &state->images, state->visible_len) &&
+            byte_prefix_match(key, strlen(key), state->visible_text, state->visible_len);
+    }
+    free(key);
+    if (visible_match) return live_pos;
     if (ds4_session_pos(slot->session) > 0 &&
-        !ds4_session_vision_state_matches(slot->session,
+        !ds4_session_vision_prefix_matches(slot->session,
                                           j->req.images, j->req.image_count)) {
         return -1;
     }
@@ -14597,6 +14886,7 @@ static void server_close_resources(server *s) {
     }
     kv_cache_close(&s->kv);
     tool_memory_free(&s->tool_mem);
+    server_image_cache_clear(&s->image_cache);
     for (int i = 0; i < s->slot_count; i++) {
         server_slot *slot = &s->slots[i];
         live_tool_state_free(&slot->responses_live);
@@ -20917,7 +21207,146 @@ static void test_responses_inline_image_content(void) {
     buf_free(&json);
 }
 
+static void test_visible_image_key(void) {
+    char markers[2][SERVER_IMAGE_MARKER_BYTES] = {"nonce_A", "nonce_B"};
+    request req = {.image_count = 1, .image_markers = markers};
+    visible_image_key first, next;
+    char *a = visible_prompt_key(&req, "xnonce_Ay", &first);
+    TEST_ASSERT(a && first.count == 1 && first.offsets[0] == 1);
+    memcpy(markers[0], "nonce_Z", 8);
+    char *b = visible_prompt_key(&req, "xnonce_Zy", &next);
+    TEST_ASSERT(a && b && !strcmp(a, b));
+    TEST_ASSERT(visible_image_prefix_matches(&next, &first, strlen(a)));
+    free(b);
+    req.image_count = 0;
+    b = visible_prompt_key(&req, a, &next);
+    TEST_ASSERT(b && !strcmp(a, b));
+    TEST_ASSERT(!visible_image_prefix_matches(&next, &first, strlen(a)));
+    free(b);
+    req.image_count = 2;
+    b = visible_prompt_key(&req, "xnonce_Zy-nextnonce_B", &next);
+    TEST_ASSERT(b && byte_prefix_match(b, strlen(b), a, strlen(a)));
+    TEST_ASSERT(visible_image_prefix_matches(&next, &first, strlen(a)));
+    next.offsets[0]++;
+    TEST_ASSERT(!visible_image_prefix_matches(&next, &first, strlen(a)));
+    free(b);
+    free(a);
+    TEST_ASSERT(visible_prompt_key(&req, "marker missing", &next) == NULL);
+
+    request glm = {.model_syntax = SERVER_MODEL_SYNTAX_GLM, .think_mode = DS4_THINK_HIGH,
+                   .prompt_text = "<|user|>hello<|assistant|><think>"};
+    char *visible = build_toolless_thinking_visible_text(&glm, " hello ");
+    TEST_ASSERT(!strcmp(visible, "<|user|>hello<|assistant|><think></think>hello"));
+    free(visible);
+}
+
+static void test_anthropic_tool_image_output(void) {
+    buf json = {0};
+    buf_puts(&json, "[{\"content\":[{\"type\":\"tool_result\","
+                    "\"tool_use_id\":\"tool_test\",\"content\":["
+                    "{\"type\":\"text\",\"text\":\"read image\"},"
+                    "{\"type\":\"image\",\"source\":{\"type\":\"base64\","
+                    "\"media_type\":\"image/png\",\"data\":\"");
+    buf_puts(&json, test_inline_png_base64);
+    buf_puts(&json, "\"}}]}],\"role\":\"user\"}]");
+    const char *p = json.ptr;
+    chat_msgs msgs = {0};
+    TEST_ASSERT(parse_anthropic_messages(&p, &msgs));
+    TEST_ASSERT(msgs.len == 1 && msgs.v[0].images.len == 1);
+    TEST_ASSERT(strstr(msgs.v[0].content, "<tool_result>read image") != NULL);
+    TEST_ASSERT(strstr(msgs.v[0].content, msgs.v[0].images.v[0].marker) != NULL);
+    chat_msgs_free(&msgs);
+    buf_free(&json);
+    const char *invalid[] = {
+        "[{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":["
+        "{\"type\":\"tool_use\",\"name\":\"bash\",\"input\":{}}]}]}]",
+        "[{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":["
+        "{\"type\":\"tool_result\",\"content\":\"nested\"}]}]}]",
+    };
+    for (size_t i = 0; i < 2; i++) {
+        p = invalid[i];
+        TEST_ASSERT(!parse_anthropic_messages(&p, &msgs));
+        chat_msgs_free(&msgs);
+    }
+}
+
+static void test_responses_tool_image_output(void) {
+    const char *types[] = {"function_call_output", "custom_tool_call_output", "reasoning"};
+    for (size_t i = 0; i < 3; i++) {
+        buf json = {0};
+        buf_puts(&json, "[{\"type\":\"");
+        buf_puts(&json, types[i]);
+        buf_puts(&json, "\",\"call_id\":\"call_test\",\"output\":["
+                       "{\"type\":\"input_text\",\"text\":\"read image\"},"
+                       "{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,");
+        buf_puts(&json, test_inline_png_base64);
+        buf_puts(&json, "\"}]}]");
+        const char *p = json.ptr;
+        chat_msgs msgs = {0};
+        bool ok = parse_responses_input(&p, &msgs, NULL, NULL);
+        TEST_ASSERT(ok == (i < 2));
+        if (ok) {
+            TEST_ASSERT(msgs.len == 1 && !strcmp(msgs.v[0].role, "tool"));
+            TEST_ASSERT(msgs.v[0].images.len == 1);
+            TEST_ASSERT(strstr(msgs.v[0].content, msgs.v[0].images.v[0].marker) != NULL);
+        }
+        chat_msgs_free(&msgs);
+        buf_free(&json);
+    }
+}
+
+static void test_server_image_embedding_cache(void) {
+    server_image_cache cache = {0};
+    uint8_t key = 1;
+    float data[2] = {1.25f, -2.5f};
+    server_image_input input = {.encoded = &key, .encoded_len = 1};
+    ds4_vision_embedding src = {.data = data, .token_count = 1,
+                               .width = 42, .fingerprint = {7}};
+    ds4_vision_embedding out = {0};
+    const size_t budget = 2 * (sizeof(data) + 1);
+    TEST_ASSERT(!server_image_cache_get(&cache, &input, &out));
+    server_image_cache_put(&cache, &input, &src, 2, budget);
+    TEST_ASSERT(server_image_cache_get(&cache, &input, &out));
+    TEST_ASSERT(out.data != data && !memcmp(out.data, data, sizeof(data)));
+    TEST_ASSERT(out.width == 42 && out.fingerprint[0] == 7);
+    out.data[0] = 99;
+    ds4_vision_embedding_free(&out);
+    key = 2;
+    TEST_ASSERT(!server_image_cache_get(&cache, &input, &out));
+    server_image_cache_put(&cache, &input, &src, 2, budget);
+    key = 1;
+    TEST_ASSERT(server_image_cache_get(&cache, &input, &out));
+    TEST_ASSERT(out.data[0] == data[0]);
+    ds4_vision_embedding_free(&out);
+    key = 3;
+    server_image_cache_put(&cache, &input, &src, 2, budget);
+    TEST_ASSERT(cache.bytes == budget);
+    key = 2;
+    TEST_ASSERT(!server_image_cache_get(&cache, &input, &out));
+    key = 1;
+    TEST_ASSERT(server_image_cache_get(&cache, &input, &out));
+    ds4_vision_embedding_free(&out);
+    server_image_cache_clear(&cache);
+    TEST_ASSERT(cache.bytes == 0 && cache.clock == 0);
+    for (key = 1; key <= SERVER_IMAGE_CACHE_ENTRIES + 1; key++)
+        server_image_cache_put(&cache, &input, &src, 2, 4096);
+    TEST_ASSERT(cache.bytes == SERVER_IMAGE_CACHE_ENTRIES * (sizeof(data) + 1));
+    key = 1;
+    TEST_ASSERT(!server_image_cache_get(&cache, &input, &out));
+    server_image_cache_clear(&cache);
+    src.token_count = UINT32_MAX;
+    server_image_cache_put(&cache, &input, &src, UINT32_MAX, SIZE_MAX);
+    TEST_ASSERT(cache.bytes == 0);
+    src.token_count = 1;
+    server_image_cache_put(&cache, &input, &src, 2, sizeof(data));
+    TEST_ASSERT(cache.bytes == 0);
+}
+
 static void ds4_server_unit_tests_run(void) {
+    test_visible_image_key();
+    test_anthropic_tool_image_output();
+    test_responses_tool_image_output();
+    test_server_image_embedding_cache();
     test_batched_prefill_round_robin();
     test_mixed_prefill_quantum_option();
     test_multimodal_prefill_resume_frontier();

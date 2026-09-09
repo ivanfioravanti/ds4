@@ -70809,12 +70809,12 @@ static void ds4_session_note_prefill_progress(void *ud, const char *event, int c
  */
 static int ds4_session_sync_internal(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen);
 
-static bool ds4_session_vision_prefix_matches(
+bool ds4_session_vision_prefix_matches(
         const ds4_session     *s,
         const ds4_vision_span *images,
         size_t                 image_count) {
     if (!s || (image_count != 0 && !images)) return false;
-    if (!s->checkpoint_valid) return true;
+    if (!s->checkpoint_valid) return false;
     if (s->checkpoint_image_count > image_count) return false;
     for (size_t i = 0; i < s->checkpoint_image_count; i++) {
         const ds4_vision_identity *old = &s->checkpoint_images[i];
@@ -70838,6 +70838,20 @@ bool ds4_session_vision_state_matches(
     return s && s->checkpoint_valid &&
            s->checkpoint_image_count == image_count &&
            ds4_session_vision_prefix_matches(s, images, image_count);
+}
+
+bool ds4_session_rebase_vision_state(const ds4_session *s,
+                                     ds4_vision_span *images, size_t image_count) {
+    if (!s || !s->checkpoint_valid || (image_count && !images) ||
+        image_count != s->checkpoint_image_count) return false;
+    for (size_t i = 0; i < image_count; i++) {
+        if (images[i].embedding.token_count != s->checkpoint_images[i].token_count ||
+            memcmp(images[i].embedding.fingerprint, s->checkpoint_images[i].fingerprint,
+                   sizeof(images[i].embedding.fingerprint))) return false;
+    }
+    for (size_t i = 0; i < image_count; i++)
+        images[i].token_start = s->checkpoint_images[i].token_start;
+    return true;
 }
 
 bool ds4_session_has_vision_state(const ds4_session *s) {
@@ -70885,7 +70899,7 @@ static bool ds4_session_store_vision_identities(ds4_session *s) {
  * once its matching prefill completes, surfacing worker-side failures
  * here instead of as a gate timeout mid-decode. */
 int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t errlen) {
-    if (s && !ds4_session_vision_prefix_matches(
+    if (s && s->checkpoint_valid && !ds4_session_vision_prefix_matches(
                      s, s->sync_images, s->sync_image_count)) {
         ds4_session_invalidate(s);
     }

@@ -398,10 +398,12 @@ static void test_shell_terminal_controls(void) {
 static void test_markdown_literals(void) {
     const char *input[] = {"Use *.c files.", "The literal is \\*.", "An unmatched `tick",
                           "**bold** and *italic* and `code`.", "``a ` b``", "*unclosed",
-                          "* list item\n", "trailing \\", "**unclosed", "`a``", "\\`literal\\`"};
+                          "* list item\n", "trailing \\", "**unclosed", "`a``", "\\`literal\\`",
+                          "> **Hint:** Check `errno`.\n"};
     const char *expected[] = {"Use *.c files.", "The literal is *.", "An unmatched `tick",
                              "bold and italic and code.", "a ` b", "*unclosed",
-                             "* list item\n", "trailing \\", "**unclosed", "`a``", "`literal`"};
+                             "* list item\n", "trailing \\", "**unclosed", "`a``", "`literal`",
+                             "> Hint: Check errno.\n"};
     for (size_t i = 0; i < sizeof(input)/sizeof(input[0]); i++) {
         agent_tail_capture capture = {.cap = 16384};
         agent_token_renderer r = {.capture = &capture, .format_markdown = true};
@@ -423,6 +425,106 @@ static void test_markdown_literals(void) {
     char *out = agent_tail_capture_take(&capture, &len);
     AGENT_TEST_ASSERT(len == 8193 && out[0] == '*');
     free(out);
+}
+
+static char *test_hint_capture(const char *text, size_t split, bool markdown,
+                               bool color, agent_tool_syntax syntax, int *calls) {
+    agent_tail_capture capture = {.cap = 32768};
+    agent_token_renderer renderer = {.capture = &capture, .format_thinking = true,
+        .format_markdown = markdown, .use_color = color, .last_output_newline = true};
+    agent_dsml_parser parser = {.syntax = syntax, .state = AGENT_DSML_SEARCH};
+    agent_stream_renderer stream = {.renderer = &renderer, .parser = &parser, .syntax = syntax};
+    size_t n = strlen(text);
+    if (split <= n) {
+        agent_stream_text(&stream, text, split, false);
+        /* A prompt redraw resets terminal colors between generated fragments. */
+        if (color && renderer.wrote_visible_output) renderer_write(&renderer, "\x1b[0m", 4);
+        agent_stream_text(&stream, text + split, n - split, false);
+    } else {
+        for (size_t i = 0; i < n; i++) {
+            agent_stream_text(&stream, text + i, 1, false);
+            if (color && renderer.wrote_visible_output) renderer_write(&renderer, "\x1b[0m", 4);
+        }
+    }
+    agent_stream_text(&stream, NULL, 0, true);
+    renderer_finish(&renderer);
+    AGENT_TEST_ASSERT(!renderer.md_hint && !renderer.md_hint_prefix_len && !renderer.color_open);
+    if (calls) {
+        *calls = (int)parser.calls.len;
+        AGENT_TEST_ASSERT(parser.calls.len == 1);
+        if (parser.calls.len == 1) {
+            AGENT_TEST_ASSERT(!strcmp(parser.calls.v[0].name, "bash"));
+            AGENT_TEST_ASSERT(parser.calls.v[0].argc == 1);
+            if (parser.calls.v[0].argc == 1)
+                AGENT_TEST_ASSERT(!strcmp(parser.calls.v[0].args[0].value, "printf HINT_OK"));
+        }
+    } else AGENT_TEST_ASSERT(parser.calls.len == 0);
+    agent_dsml_parser_free(&parser);
+    return agent_tail_capture_take(&capture, NULL);
+}
+
+static void test_hint_rendering(void) {
+    const char *badge = "\x1b[1;97;48;5;23m Hint \x1b[0m";
+    const char *sample =
+        "The error path is fixed.\n\n"
+        "> **Hint:** Save `errno` before **cleanup**; calls can overwrite it.\n"
+        "> Keep the original error for reporting.\n"
+        "> Unicode stays intact: caf\xc3\xa9, \xe4\xb8\xad.\n"
+        "Normal prose resumes here.\n\n"
+        "```text\n> **Hint:** This is literal code.\n```\n"
+        "Another normal line.\n";
+    for (size_t split = 0; split <= strlen(sample) + 1; split++) {
+        char *out = test_hint_capture(sample, split, true, true, AGENT_TOOL_SYNTAX_DSML, NULL);
+        const char *label = strstr(out, badge);
+        AGENT_TEST_ASSERT(label && !strstr(label + strlen(badge), badge));
+        AGENT_TEST_ASSERT(strstr(out, "\x1b[1mcleanup") || split > strlen(sample));
+        if (split == strlen(sample)) test_fixture("hints.ansi", out, strlen(out));
+        if (split > strlen(sample)) test_fixture("hints-fragmented.ansi", out, strlen(out));
+        free(out);
+    }
+    const char *literal[] = {"> quoted text", "> **Hinting:** not a hint",
+        "Inline > **Hint:** not an aside", "`> **Hint:** literal`",
+        "\\> **Hint:** escaped", "<think>> **Hint:** hidden reasoning</think>Normal."};
+    for (size_t i = 0; i < sizeof(literal) / sizeof(literal[0]); i++) {
+        char *out = test_hint_capture(literal[i], strlen(literal[i]), true, true,
+                                      AGENT_TOOL_SYNTAX_DSML, NULL);
+        AGENT_TEST_ASSERT(!strstr(out, badge));
+        free(out);
+    }
+    const char marker[] = "> **Hint:**";
+    for (size_t i = 0; i < sizeof(marker) - 1; i++) {
+        char partial[sizeof(marker)];
+        memcpy(partial, marker, i);
+        partial[i] = 0;
+        char *out = test_hint_capture(partial, i, true, true, AGENT_TOOL_SYNTAX_GLM, NULL);
+        AGENT_TEST_ASSERT(!strstr(out, badge) && !strncmp(out, partial, i));
+        free(out);
+    }
+    char *out = test_hint_capture(sample, strlen(sample), false, false, AGENT_TOOL_SYNTAX_DSML, NULL);
+    AGENT_TEST_ASSERT(!strncmp(out, sample, strlen(sample)) && !strchr(out, '\x1b'));
+    free(out);
+    out = test_hint_capture("> **Hint:** Check `errno`.\n", 0, true, false, AGENT_TOOL_SYNTAX_DSML, NULL);
+    AGENT_TEST_ASSERT(!strcmp(out, "> Hint: Check errno.\n\n"));
+    free(out);
+    const char *tool[] = {
+        "> **Hint:** Keep shell checks reproducible.\n"
+        "<｜DSML｜tool_calls><｜DSML｜invoke name=\"bash\">"
+        "<｜DSML｜parameter name=\"command\" string=\"true\">printf HINT_OK"
+        "</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>",
+        "> **Hint:** Keep shell checks reproducible.\n"
+        "<tool_call>bash<arg_key>command</arg_key><arg_value>printf HINT_OK</arg_value></tool_call>"
+    };
+    for (int glm = 0; glm < 2; glm++) {
+        for (size_t split = 0; split <= strlen(tool[glm]); split++) {
+            int calls = 0;
+            out = test_hint_capture(tool[glm], split, true, true,
+                glm ? AGENT_TOOL_SYNTAX_GLM : AGENT_TOOL_SYNTAX_DSML, &calls);
+            AGENT_TEST_ASSERT(calls == 1 && strstr(out, badge));
+            if (split == strlen(tool[glm]))
+                test_fixture(glm ? "hints-glm-tool.ansi" : "hints-dsml-tool.ansi", out, strlen(out));
+            free(out);
+        }
+    }
 }
 
 static void test_unicode_output_and_footer(void) {
@@ -593,6 +695,53 @@ static void test_observation_error_is_not_context_exhaustion(void) {
     ds4_tokens_free(&worker.transcript);
 }
 
+static void test_compaction_boundaries(void) {
+    agent_dsml_parser parser = {.state = AGENT_DSML_SEARCH};
+    agent_stream_renderer stream = {.parser = &parser};
+    AGENT_TEST_ASSERT(!agent_stream_compaction_needs_lookahead(&stream));
+    stream.pending_len = 1;
+    AGENT_TEST_ASSERT(agent_stream_compaction_needs_lookahead(&stream));
+    stream.pending_len = 0;
+    stream.dsml_start_len = 1;
+    AGENT_TEST_ASSERT(agent_stream_compaction_needs_lookahead(&stream));
+    stream.dsml_active = true;
+    AGENT_TEST_ASSERT(!agent_stream_compaction_needs_lookahead(&stream));
+    stream.dsml_active = false;
+    parser.state = AGENT_DSML_PARAM_VALUE;
+    AGENT_TEST_ASSERT(!agent_stream_compaction_needs_lookahead(&stream));
+    int data[1000] = {0};
+    ds4_tokens tokens = {.v = data, .len = 1000};
+    AGENT_TEST_ASSERT(agent_compact_tail_boundary(&tokens, 1000, 100, 100, 42) == 900);
+    data[850] = 42;
+    AGENT_TEST_ASSERT(agent_compact_tail_boundary(&tokens, 1000, 100, 100, 42) == 850);
+    data[950] = 42;
+    AGENT_TEST_ASSERT(agent_compact_tail_boundary(&tokens, 1000, 100, 100, 42) == 950);
+    data[850] = data[950] = 0;
+    data[799] = 42;
+    AGENT_TEST_ASSERT(agent_compact_tail_boundary(&tokens, 1000, 100, 100, 42) == 900);
+    AGENT_TEST_ASSERT(agent_compact_tail_boundary(&tokens, 150, 100, 100, 42) == 100);
+    AGENT_TEST_ASSERT(agent_compact_tail_boundary(&tokens, 1000, 100, 100, -1) == 900);
+    AGENT_TEST_ASSERT(agent_compact_summary_budget(4096) == 512);
+    AGENT_TEST_ASSERT(agent_compact_summary_budget(100000) == 4096);
+    AGENT_TEST_ASSERT(agent_compact_summary_budget(1024) == 256);
+    ds4_vision_span spans[2] = {
+        {.token_start = 100, .embedding = {.token_count = 50}},
+        {.token_start = 200, .embedding = {.token_count = 30}},
+    };
+    for (int glm = 0; glm <= 1; glm++) {
+        for (int pos = 0; pos < 260; pos++) {
+            int expected = pos;
+            for (size_t i = 0; i < 2; i++) {
+                int start = (int)spans[i].token_start - glm;
+                int end = (int)(spans[i].token_start + spans[i].embedding.token_count) + glm;
+                if (pos > start && pos < end) expected = start;
+            }
+            AGENT_TEST_ASSERT(agent_compact_image_boundary(spans, 2, glm, pos) == expected);
+        }
+    }
+    AGENT_TEST_ASSERT(agent_compact_image_boundary(NULL, 0, false, 77) == 77);
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--terminal-driver")) return test_terminal_driver();
     if (argc == 3 && !strcmp(argv[1], "--terminal-fixtures")) test_output_dir = argv[2];
@@ -603,6 +752,7 @@ int main(int argc, char **argv) {
     AGENT_TEST_ASSERT(cfg.engine.vision_path && !strcmp(cfg.engine.vision_path, "mmproj.gguf"));
     AGENT_TEST_ASSERT(cfg.engine.model_path && !strcmp(cfg.engine.model_path, "qwen.gguf"));
     ds4_agent_unit_tests_run();
+    test_compaction_boundaries();
     test_observation_error_is_not_context_exhaustion();
     test_atomic_file_tools();
     test_streaming_file_tools();
@@ -610,6 +760,7 @@ int main(int argc, char **argv) {
     test_fragmented_terminal_input();
     test_shell_terminal_controls();
     test_markdown_literals();
+    test_hint_rendering();
     test_unicode_output_and_footer();
     test_footer_only_updates();
     test_tool_contracts();
