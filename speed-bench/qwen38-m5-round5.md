@@ -154,6 +154,20 @@ selected keys per token; an exact prefetch does not help it, so its remaining le
 is a multi-token restructure sharing the selected blocks across a query tile, which
 changes the online-softmax order (drift class) and is left for a decision.
 
+## Can the tensor tiles be bit-exact?
+
+No, on this hardware.  The reference accumulates each output with
+`simdgroup_multiply_accumulate` (8-term dot products added to the fp32
+accumulator in ascending K order, one accumulator per element).  On the tensor
+ops: a static K must be a multiple of 16 (`K must be dynamic or a multiple of
+16`); K=16 runs give outputs bit-identical to K=32 runs (the unit reduces in
+16-wide chunks internally), 7.5 ms dense; a dynamic-K partition of 8-term runs in
+the same order changes the outputs (different hashes) but still does not match
+the simdgroup tiles (max |d| 6.6e-7 for mid, 1.5e-5 for down) and runs at the
+simdgroup speed (15 ms).  The unit's internal rounding of a dot product is not
+the simdgroup unit's and is not controllable, so a bit-exact tensor path is not
+available; the tensor tiles stay opt-in.
+
 ## Verification
 
 - `tests/test_qwen4_kernels`: all passes, including the bounded tensor-tile pass
