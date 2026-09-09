@@ -47505,6 +47505,10 @@ enum {
     QWEN4_K_MOE_MM_DOWN_NT2,
     QWEN4_K_MOE_MM_DOWN_NT8,
     QWEN4_K_MOE_MM_MID_NT8,
+    QWEN4_K_MOE_MM_MID_NAX,
+    QWEN4_K_MOE_MM_DOWN_NAX,
+    QWEN4_K_MOE_MM_MID_NAX64,
+    QWEN4_K_MOE_MM_DOWN_NAX64,
     QWEN4_K_DENSE_MM,
     QWEN4_K_HC_LO_ACT,
     QWEN4_K_HC_MIX_ROWS,
@@ -47579,6 +47583,10 @@ static const char *const qwen4_kernel_names[QWEN4_K_COUNT] = {
     "kernel_qwen4_moe_mm_down_nt2",
     "kernel_qwen4_moe_mm_down_nt8",
     "kernel_qwen4_moe_mm_mid_nt8",
+    "kernel_qwen4_moe_mm_mid_nax",
+    "kernel_qwen4_moe_mm_down_nax",
+    "kernel_qwen4_moe_mm_mid_nax64",
+    "kernel_qwen4_moe_mm_down_nax64",
     "kernel_qwen4_dense_mm",
     "kernel_qwen4_hc_lo_act",
     "kernel_qwen4_hc_mix_rows",
@@ -47670,7 +47678,7 @@ static int qwen4_dispatch(int kernel, const void *args, size_t args_len,
                 }
                 [g_pipeline_cache setObject:pipeline forKey:key];
             }
-        } else if (kernel >= QWEN4_K_MOE_MM_MID && kernel <= QWEN4_K_MOE_MM_MID_NT8) {
+        } else if (kernel >= QWEN4_K_MOE_MM_MID && kernel <= QWEN4_K_MOE_MM_DOWN_NAX64) {
             /* Keep each quantization's dequantizer constant through the K
              * loop. M3 Ultra and M5 have balanced full-model measurements;
              * other devices can opt in, and zero restores the generic kernel. */
@@ -48578,6 +48586,19 @@ static uint32_t qwen4_moe_mm_nt(uint32_t n_tokens, uint32_t type, const char *en
     return nt == 1u || nt == 2u || nt == 4u || nt == 8u ? nt : default_nt;
 }
 
+/* Routed tiles on the Metal 4 tensor ops (drift class: the cooperative
+ * matmul's accumulation order differs from the simdgroup tiles; needs the
+ * tensor API).  DS4_QWEN4_MOE_MM_NAX: 0/unset simdgroup tiles; 1 tensor-op
+ * tiles of 32 tokens; 2 tensor-op tiles of 64 tokens.  Returns the token
+ * tile width, 0 for the simdgroup path. */
+static uint32_t qwen4_moe_mm_nax(uint32_t type) {
+    if (!(type == 12u || type == 39u) || !ds4_gpu_mpp_available()) return 0;
+    const char *v = getenv("DS4_QWEN4_MOE_MM_NAX");
+    if (!v || !v[0]) return 0;
+    const long n = strtol(v, NULL, 10);
+    return n <= 0 ? 0u : n >= 2 ? 64u : 32u;
+}
+
 static bool qwen4_moe_mm_tails(uint32_t type, uint32_t nt) {
     /* Remainder tiles measured on M3 Ultra for the low-bit experts and on M5
      * for Q4_K gate/up with MXFP4 down. */
@@ -48614,6 +48635,13 @@ int ds4_gpu_qwen4_moe_mm_mid_tensor(
         !qwen4_bind_tensor(&b[4], x, (uint64_t)n_tokens * in_dim * sizeof(float), "moe input") ||
         !qwen4_bind_tensor(&b[5], mid, (uint64_t)n_tokens * n_out * ff_dim * sizeof(float), "moe mid")) {
         return 0;
+    }
+    const uint32_t nax = qwen4_moe_mm_nax(weight_type);
+    if (nax) {
+        args.tail_base = 0;
+        return qwen4_dispatch(nax == 64u ? QWEN4_K_MOE_MM_MID_NAX64 : QWEN4_K_MOE_MM_MID_NAX, &args, sizeof(args), b, 6,
+                              qwen4_moe_mm_grid((ff_dim + 63u) / 64u, n_expert, tiles, args.expert_major),
+                              MTLSizeMake(128, 1, 1), nax == 64u ? 16384u : 10240u);
     }
     if (!qwen4_dispatch(kernel, &args, sizeof(args), b, 6,
                           qwen4_moe_mm_grid((ff_dim + 31u) / 32u, n_expert, tiles, args.expert_major),
@@ -48654,6 +48682,13 @@ int ds4_gpu_qwen4_moe_mm_down_tensor(
         !qwen4_bind_tensor(&b[3], mid, (uint64_t)n_tokens * n_out * ff_dim * sizeof(float), "moe mid") ||
         !qwen4_bind_tensor(&b[4], part, (uint64_t)n_tokens * n_out * out_dim * sizeof(float), "moe partial")) {
         return 0;
+    }
+    const uint32_t nax = qwen4_moe_mm_nax(weight_type);
+    if (nax) {
+        args.tail_base = 0;
+        return qwen4_dispatch(nax == 64u ? QWEN4_K_MOE_MM_DOWN_NAX64 : QWEN4_K_MOE_MM_DOWN_NAX, &args, sizeof(args), b, 5,
+                              qwen4_moe_mm_grid((out_dim + 63u) / 64u, n_expert, tiles, args.expert_major),
+                              MTLSizeMake(128, 1, 1), nax == 64u ? 16384u : 8192u);
     }
     if (!qwen4_dispatch(kernel, &args, sizeof(args), b, 5,
                           qwen4_moe_mm_grid((out_dim + 31u) / 32u, n_expert, tiles, args.expert_major),

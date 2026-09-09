@@ -2102,6 +2102,46 @@ static void test_moe_mm_tiles_exact(arena_t *a, uint32_t down_type) {
         unsetenv("DS4_QWEN4_MOE_MID_NT");
         unsetenv("DS4_QWEN4_MOE_TAILS");
     }
+    if (down_type == 39u) for (uint32_t nax = 1; nax <= 2; nax++) {
+        /* tensor-op tiles of 32 (1) and 64 (2) tokens: same operands, cooperative
+         * accumulation; bound the drift against the simdgroup tiles */
+        char nax_str[4]; snprintf(nax_str, sizeof(nax_str), "%u", nax);
+        for (uint32_t i = 0; i < 2; i++) setenv(env_names[i], "8", 1);
+        setenv("DS4_QWEN4_MOE_MM_NAX", nax_str, 1);
+        require_ok(ds4_gpu_tensor_fill_f32(gmid, sentinel, mid_n + guard) &&
+                   ds4_gpu_tensor_fill_f32(gpart, sentinel, part_n + guard), "MoE nax sentinels");
+        if (ds4_gpu_qwen4_moe_mm_mid_tensor(gmid, gx, glists, gcounts, a->base, a->size, gate_off, up_off,
+                                            12u, NE, T, slots, n_out, E, F, list_cap)) {
+            float *got_mid = download(gmid, mid_n + guard);
+            double worst = 0.0, scale = 0.0;
+            for (uint64_t i = 0; i < mid_n; i++) {
+                if (ref_mid[i] == sentinel) continue;
+                const double d = fabs((double)got_mid[i] - ref_mid[i]);
+                if (d > worst) worst = d;
+                if (fabs(ref_mid[i]) > scale) scale = fabs(ref_mid[i]);
+            }
+            for (uint64_t i = mid_n; i < mid_n + guard; i++) require_ok(got_mid[i] == sentinel, "MoE nax mid tail guard");
+            require_ok(worst <= 2e-3 * scale, "MoE nax mid within 2e-3 of the simdgroup tiles");
+            printf("  MoE nax=%u mid: max|d|=%.3e (scale %.3e)\n", nax, worst, scale);
+            require_ok(ds4_gpu_qwen4_moe_mm_down_tensor(gpart, gmid, glists, gcounts, a->base, a->size, down_off,
+                                                     down_type, NE, T, slots, n_out, F, E, list_cap), "MoE nax down dispatch");
+            float *got_part = download(gpart, part_n + guard);
+            worst = 0.0; scale = 0.0;
+            for (uint64_t i = 0; i < part_n; i++) {
+                if (ref_part[i] == sentinel) continue;
+                const double d = fabs((double)got_part[i] - ref_part[i]);
+                if (d > worst) worst = d;
+                if (fabs(ref_part[i]) > scale) scale = fabs(ref_part[i]);
+            }
+            for (uint64_t i = part_n; i < part_n + guard; i++) require_ok(got_part[i] == sentinel, "MoE nax down tail guard");
+            require_ok(worst <= 2e-3 * scale, "MoE nax down within 2e-3 of the simdgroup tiles");
+            printf("  MoE nax=%u down: max|d|=%.3e (scale %.3e)\n", nax, worst, scale);
+            free(got_mid); free(got_part);
+        } else {
+            printf("  MoE nax: tensor API unavailable, skipped\n");
+        }
+        unsetenv("DS4_QWEN4_MOE_MM_NAX");
+    }
     printf("  MoE tile caps T=%u Q4_K/%s: caps 1,16,32 and 64-token gate/up tiles byte-exact mid/down vs cap8\n",
            T, down_type == 39u ? "mxfp4" : "q8_0");
     for (uint32_t i = 0; i < 2; i++) {
