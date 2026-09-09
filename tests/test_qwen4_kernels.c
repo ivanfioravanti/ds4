@@ -2122,7 +2122,11 @@ static void test_moe_mm_tiles_exact(arena_t *a, uint32_t down_type) {
             }
             for (uint64_t i = mid_n; i < mid_n + guard; i++) require_ok(got_mid[i] == sentinel, "MoE nax mid tail guard");
             require_ok(worst <= 2e-3 * scale, "MoE nax mid within 2e-3 of the simdgroup tiles");
-            printf("  MoE nax=%u mid: max|d|=%.3e (scale %.3e)\n", nax, worst, scale);
+            {
+                uint64_t h = 1469598103934665603ull;
+                for (uint64_t i = 0; i < mid_n; i++) { uint32_t u; memcpy(&u, &got_mid[i], 4); h = (h ^ u) * 1099511628211ull; }
+                printf("  MoE nax=%u mid: max|d|=%.3e (scale %.3e) hash=%016llx\n", nax, worst, scale, (unsigned long long)h);
+            }
             require_ok(ds4_gpu_qwen4_moe_mm_down_tensor(gpart, gmid, glists, gcounts, a->base, a->size, down_off,
                                                      down_type, NE, T, slots, n_out, F, E, list_cap), "MoE nax down dispatch");
             float *got_part = download(gpart, part_n + guard);
@@ -2135,7 +2139,11 @@ static void test_moe_mm_tiles_exact(arena_t *a, uint32_t down_type) {
             }
             for (uint64_t i = part_n; i < part_n + guard; i++) require_ok(got_part[i] == sentinel, "MoE nax down tail guard");
             require_ok(worst <= 2e-3 * scale, "MoE nax down within 2e-3 of the simdgroup tiles");
-            printf("  MoE nax=%u down: max|d|=%.3e (scale %.3e)\n", nax, worst, scale);
+            {
+                uint64_t h = 1469598103934665603ull;
+                for (uint64_t i = 0; i < part_n; i++) { uint32_t u; memcpy(&u, &got_part[i], 4); h = (h ^ u) * 1099511628211ull; }
+                printf("  MoE nax=%u down: max|d|=%.3e (scale %.3e) hash=%016llx\n", nax, worst, scale, (unsigned long long)h);
+            }
             free(got_mid); free(got_part);
         } else {
             printf("  MoE nax: tensor API unavailable, skipped\n");
