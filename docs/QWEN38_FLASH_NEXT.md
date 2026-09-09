@@ -13,24 +13,60 @@ The [DS4 Q2 release](https://huggingface.co/ivanfioravanti/Qwen3.8-Flash-Next-DS
 contains a **41.73 GiB** combined main/MTP GGUF. It uses IQ2_XXS gate/up
 experts and Q2_K down projections, with weight rows padded from 640 to 768
 columns. The required external Q4_1 PLE sidecar is reused from the Q4 repo;
-together the files use about **76.81 GB (71.53 GiB)** on disk. For a 64 GB
-Mac, start with 8K context and a 1,024-token prefill chunk:
+together the files use about **76.81 GB (71.53 GiB)** on disk. On a 64 GB Mac,
+64K is the practical daily context (about 44.8 GiB planned, stable alongside a
+normal desktop load); 128K fits at about 47.0 GiB but only on a clean host —
+once the OS is several GB into swap, prefill can fail inside the Metal command
+buffer with `Insufficient Memory`. The Qwen path defaults to an 8192-token
+prefill chunk (`DS4_QWEN4_PREFILL_CHUNK` overrides it; `--help` still lists the
+generic 4096 default). Prefill throughput barely moves with the chunk size, so
+1,024 is a fine low-memory choice:
 
 ```sh
 ./download_model.sh qwen38-q2
-./ds4 --ple gguf/Qwen3.8-Flash-Next-PLE-Q4_1.gguf --ctx 8192 --prefill-chunk 1024
-./ds4-server --ple gguf/Qwen3.8-Flash-Next-PLE-Q4_1.gguf --ctx 8192 --prefill-chunk 1024 --mtp --mtp-exact-sampling
-./ds4-agent --ple gguf/Qwen3.8-Flash-Next-PLE-Q4_1.gguf --ctx 8192 --prefill-chunk 1024 --mtp
+./ds4 --ple gguf/Qwen3.8-Flash-Next-PLE-Q4_1.gguf --ctx 65536 --prefill-chunk 1024
+./ds4-server --ple gguf/Qwen3.8-Flash-Next-PLE-Q4_1.gguf --ctx 65536 --prefill-chunk 1024 --mtp --mtp-exact-sampling
+./ds4-agent --ple gguf/Qwen3.8-Flash-Next-PLE-Q4_1.gguf --ctx 65536 --prefill-chunk 1024 --mtp
 ```
 
 The downloader links `ds4flash.gguf` to the combined model. Both ordinary and
 MTP decode use this same GGUF and PLE sidecar; omit `--mtp` for ordinary decode.
-Adjust the PLE path if you set `DS4_GGUF_DIR`. The external PLE table is mapped
-separately and demand-paged on the CPU; resident pages still consume RAM.
-Context, host allocations, and other workloads also affect memory use. The
+One physical 64 GB data point, an M1 Max (32-core GPU, 64 GB) at `18ca8ec`
+with the same files and `--temp 0 --nothink --prefill-chunk 1024`:
+
+| ctx | decode | decode `--mtp` | MTP acceptance | prefill (3K prompt) |
+|---:|---:|---:|---:|---:|
+| 65,536 | 20.9 t/s | 27.6 t/s | 96.7% | 242 t/s |
+| 131,072 | 20.2 t/s | 26.8 t/s * | 96.7% | 200–217 t/s |
+| 262,144 | 19.7 t/s | – | – | – |
+
+\* 128K decode was run-to-run unstable while host swap grew (26.8 down to
+3.0 t/s over five identical runs); `DS4_QWEN4_PLE_PREFETCH_FULL=1` was steady
+but slower at 21.9 t/s. Planned memory on that host: 44.79 GiB at 64K (stable
+with a browser and a 1.6 GB VM alive), 47.00 GiB at 128K (works only with host
+swap at 0), 51.42 GiB at 256K — not a daily setting. The
 [Q2 comparison](../speed-bench/qwen38-q2down.md) was measured on an M3 Ultra
-with 512 GiB, so it is not a physical 64 GB fit test. The larger
-`./download_model.sh qwen38-q4k` target remains available for higher precision.
+with 512 GiB. The larger `./download_model.sh qwen38-q4k` target remains
+available for higher precision.
+
+
+### PLE sidecar residency
+
+The sidecar is prefetched whole when installed RAM covers the resident model
+plus the sidecar plus a 16 GiB margin, and demand-paged otherwise; the startup
+line reports which path was taken. Full prefetch makes the first cold-cache
+prefill faster; demand paging keeps tight hosts lean. Two overrides exist:
+
+* `DS4_QWEN4_PLE_PREFETCH_FULL=1` forces the full prefetch, `=0` forces
+  demand paging. On a host already several GB into swap at 128K, forcing the
+  prefetch traded speed for steadiness in the measurements above.
+* `DS4_QWEN4_PLE_EVICT_TOKENS=N` (default off) bounds the demand-paged
+  working set, which otherwise grows with tokens processed as touched sidecar
+  pages accumulate: every N tokens the pages are dropped, so recurring n-grams
+  re-fault. N=256 held residency near 130 MiB for roughly 3% decode cost on
+  an M5 Max; N=1024 near 480 MiB for a noise-level cost.
+
+Neither knob changes model output.
 
 Use `ds4-agent` for native terminal and web tools. Its `bash` tool executes
 commands; `google_search` and `visit_page` use a visible Chrome browser.
@@ -234,8 +270,10 @@ after another rather than as one grouped batch, so it buys concurrency, not
 throughput. Thinking is on by default with the model's `xhigh` reasoning
 instruction; `reasoning_effort` `low`, `medium` or `xhigh` selects the model
 card's levels (`chat_template_kwargs` with `enable_thinking` and
-`reasoning_effort` is accepted too), the server's `qwen3.8-flash-next-chat`
-alias disables thinking and `qwen3.8-flash-next-reasoner` forces it. Tool
+`reasoning_effort` is accepted too), the server's `qwen3.8-flash-next-chat`,
+`qwen3.8-flash-next-nothink` and `qwen3.8-flash-next-no-think` aliases (a
+`qwen/` prefix also works) disable thinking and
+`qwen3.8-flash-next-reasoner` forces it. Tool
 calls use the model's native `<tool_call><function=...><parameter=...>` format
 in both the server and the agent. Disk KV checkpoints and live prefix reuse
 work as for the other models; the recurrent state travels with the checkpoint.
