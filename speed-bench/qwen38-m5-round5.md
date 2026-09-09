@@ -52,7 +52,7 @@ gained about 1.5%.
 | 8K -> 40K, 32-token tiles | 1148.0 tok/s | 1359.2 tok/s | +18.4% |
 | 8K -> 40K, 64-token tiles vs 32-token tiles | 1376.0 tok/s (32) | 1422.2 tok/s (64) | +3.4% |
 | 96K -> 128K, 64-token tiles (first repeat of two runs) | 1010.2 / 1023.2 tok/s | 1209.5 / 1234.6 tok/s | +19.7% / +20.7% |
-| 96K -> 128K, after the staging follow-up (one unthrottled repeat) | 1114.6 tok/s | 1452.0 tok/s | +30.3% |
+| 96K -> 128K, after the staging follow-up (one unthrottled repeat each) | 1114.6 / 1129.5 tok/s | 1452.0 / 1464.7 tok/s | +30.3% / +29.7% |
 
 The 64-token and 32-token tensor tiles produce bit-identical logits (each output
 element accumulates over the same K order); the 64-token tiles are the opt-in
