@@ -3307,6 +3307,10 @@ void ds4_gpu_decode_graphs_invalidate(void);
 #define DS4_QWEN4_HC_CHUNKS 8
 /* CPU-compatible argmax: lowest index wins ties; scores <= -1e30 and
  * NaNs cannot replace initial index zero. Scratch needs ceil(V/4096)*8 bytes. */
+/* Single-token Q8_0 matvec whose weight rows live in a GPU tensor (the
+ * gathered MTP draft head); same kernel and geometry as the model-range path. */
+int ds4_gpu_qwen4_matmul_q8_0_weights_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *w,
+                                             uint32_t in_dim, uint32_t out_dim, const ds4_gpu_tensor *x);
 int ds4_gpu_qwen4_argmax_tensor(ds4_gpu_tensor *out_idx, ds4_gpu_tensor *scratch,
                                const ds4_gpu_tensor *logits, uint32_t n_vocab);
 /* M3 Ultra decode defaults; DS4_QWEN4_DECODE_FUSIONS=0 restores old paths. */

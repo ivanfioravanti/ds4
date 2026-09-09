@@ -1435,6 +1435,26 @@ static void test_moe_types(arena_t *a, uint32_t NE, uint32_t slots, uint32_t E, 
         unsetenv("DS4_QWEN4_MOE_MV_NSG");
         free(bm); free(bp); free(am); free(ap);
     }
+    if (dtype == 39u && getenv("DS4_TEST_QWEN4_MV_EXACT")) {
+        /* The prefetched MXFP4 down rows must match the plain kernel byte for
+         * bit, shared Q8 slot included, at the default and generic geometries. */
+        const uint64_t np = (uint64_t)T * n_out * E;
+        float *bp = malloc(np * sizeof(float)), *ap = malloc(np * sizeof(float));
+        require_ok(bp && ap, "down prefetch allocation");
+        for (uint32_t spec = 0; spec < 2u; spec++) {
+            setenv("DS4_QWEN4_MOE_MV_SPECIALIZE", spec ? "1" : "0", 1);
+            for (uint32_t mode = 0; mode < 2u; mode++) {
+                setenv("DS4_QWEN4_MOE_DOWN_PREFETCH", mode ? "1" : "0", 1);
+                require_ok(ds4_gpu_qwen4_moe_down_tensor(gpart, gmid, gsel, a->base, a->size,
+                    down_off, dtype, NE, T, slots, F, E, sd_off, shared_type), "down prefetch dispatch");
+                require_ok(ds4_gpu_tensor_read(gpart, 0, mode ? ap : bp, np * sizeof(float)), "down prefetch read");
+            }
+            check_exact_f32(spec ? "prefetched MXFP4 down, specialized" : "prefetched MXFP4 down, generic", ap, bp, np);
+        }
+        unsetenv("DS4_QWEN4_MOE_MV_SPECIALIZE");
+        unsetenv("DS4_QWEN4_MOE_DOWN_PREFETCH");
+        free(bp); free(ap);
+    }
     if (dtype == 10u) {
         require_ok(!ds4_gpu_qwen4_moe_down_tensor(gpart, gmid, gsel, a->base, a->size, down_off,
                     dtype, NE, T, slots, F + 1u, E, 0, UINT32_MAX),
@@ -1642,6 +1662,78 @@ static void test_qwen4_argmax(void) {
 }
 
 /* The paired mixer must preserve both token rows and its partial-group guard. */
+/* The prefetched F16 gate/mix must reproduce the plain kernel byte for byte
+ * on every lane path: ranks that skip the eight-term rounds, that end in a
+ * remainder, and the production 320, for one and several tokens. */
+static void test_hc_mix_prefetch(arena_t *a) {
+    const uint32_t ranks[] = {8u, 72u, 136u, 200u, 320u}, tokens[] = {1u, 3u, 2u};
+    for (uint32_t ir = 0; ir < 5u; ir++) {
+        for (uint32_t it = 0; it < 3u; it++) {
+            const uint32_t rank = ranks[ir], T = tokens[it], E = rank == 320u ? 2560u : 96u;
+            const uint64_t n = (uint64_t)T * E, guard = 13u;
+            double *shadow = NULL;
+            const uint64_t off = arena_f16(a, (uint64_t)4u * E * rank, &shadow, 0.3f);
+            free(shadow);
+            float *xn = rand_vec((uint64_t)T * 4u * E, 1.0f), *lo = rand_vec((uint64_t)T * rank, 6.0f);
+            float *ref = malloc((n + guard) * sizeof(float)), *got = malloc((n + guard) * sizeof(float));
+            require_ok(ref && got, "HC prefetch readback allocation");
+            ds4_gpu_tensor *gx = upload(xn, (uint64_t)T * 4u * E), *gl = upload(lo, (uint64_t)T * rank);
+            ds4_gpu_tensor *go = upload(NULL, n + guard);
+            for (uint32_t mode = 0; mode < 2u; mode++) {
+                require_ok(setenv("DS4_QWEN4_HC_MIX_PREFETCH", mode ? "1" : "0", 1) == 0, "HC prefetch override");
+                require_ok(ds4_gpu_tensor_fill_f32(go, 127.25f, n + guard) &&
+                    ds4_gpu_qwen4_hc_gate_mix_tensor(go, gx, gl, a->base, a->size, off, 1u, T, E, 4u, rank) &&
+                    ds4_gpu_tensor_read(go, 0, mode ? got : ref, (n + guard) * sizeof(float)), "HC prefetch dispatch/read");
+            }
+            check_exact_f32("HC prefetch reference finite", ref, ref, n + guard);
+            check_exact_f32("HC prefetch rows and guard", got, ref, n + guard);
+            for (uint64_t j = n; j < n + guard; j++) require_ok(got[j] == 127.25f, "HC prefetch output guard");
+            ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gl); ds4_gpu_tensor_free(gx);
+            free(got); free(ref); free(lo); free(xn);
+        }
+    }
+    unsetenv("DS4_QWEN4_HC_MIX_PREFETCH");
+    printf("HC prefetched mixers (single and paired): exact against the plain kernels on all lane paths\n");
+}
+
+
+/* The few-row matvec simdgroup count is rows-per-threadgroup only: Q8 and
+ * F16 outputs must match the default byte for byte at 1/2/4/8 groups for the
+ * verify-row shapes (T 2 and 3, odd row counts). */
+static void test_mv_ext_groups(arena_t *a) {
+    const uint32_t T_list[] = {2u, 3u}, rows_list[] = {640u, 641u, 2560u};
+    const char *groups[] = {"2", "1", "4", "8"};
+    for (uint32_t wt = 0; wt < 2u; wt++) {
+        for (uint32_t it = 0; it < 2u; it++) {
+            for (uint32_t ir = 0; ir < 3u; ir++) {
+                const uint32_t T = T_list[it], rows = rows_list[ir], in_dim = 2560u;
+                const uint64_t n = (uint64_t)T * rows, guard = 9u;
+                double *sh = NULL;
+                const uint64_t off = wt ? arena_f16(a, (uint64_t)rows * in_dim, &sh, 0.05f)
+                                        : arena_q8_0(a, rows, in_dim, &sh, 0.05f);
+                free(sh);
+                float *x = rand_vec(n ? (uint64_t)T * in_dim : 1u, 1.0f);
+                float *ref = malloc((n + guard) * sizeof(float)), *got = malloc((n + guard) * sizeof(float));
+                require_ok(ref && got, "mv_ext groups allocation");
+                ds4_gpu_tensor *gx = upload(x, (uint64_t)T * in_dim), *go = upload(NULL, n + guard);
+                for (uint32_t mode = 0; mode < 4u; mode++) {
+                    require_ok(setenv("DS4_METAL_MV_EXT_NSG", groups[mode], 1) == 0, "mv_ext groups override");
+                    require_ok(ds4_gpu_tensor_fill_f32(go, 127.25f, n + guard) &&
+                        (wt ? ds4_gpu_matmul_f16_tensor(go, a->base, a->size, off, in_dim, rows, gx, T)
+                            : ds4_gpu_qwen4_matmul_q8_0_tensor(go, a->base, a->size, off, in_dim, rows, gx, T)) &&
+                        ds4_gpu_tensor_read(go, 0, mode ? got : ref, (n + guard) * sizeof(float)), "mv_ext groups dispatch/read");
+                    if (mode) check_exact_f32(wt ? "F16 mv_ext groups and guard" : "Q8 mv_ext groups and guard", got, ref, n + guard);
+                    else check_exact_f32("mv_ext groups reference finite", ref, ref, n + guard);
+                }
+                ds4_gpu_tensor_free(go); ds4_gpu_tensor_free(gx);
+                free(got); free(ref); free(x);
+            }
+        }
+    }
+    unsetenv("DS4_METAL_MV_EXT_NSG");
+    printf("few-row matvec simdgroup counts: Q8 and F16 verify-row shapes exact at 1/2/4/8 groups\n");
+}
+
 static void test_hc_pair_groups(arena_t *a) {
     const uint32_t types[] = {1u, 0u, 8u}, widths[] = {9u, 64u, 2560u};
     const char *groups[] = {"4", "1", "2", "8", "16"};
@@ -1997,7 +2089,20 @@ static void test_moe_mm_tiles_exact(arena_t *a, uint32_t down_type) {
         if (mode == 0) { ref_part = got_part; check_exact_f32(name, ref_part, ref_part, part_n); }
         else { check_exact_f32(name, got_part, ref_part, part_n + guard); free(got_part); }
     }
-    printf("  MoE tile caps T=%u Q4_K/%s: caps 1,16,32 byte-exact mid/down vs cap8\n",
+    {   /* 64-token gate/up tiles (with their 8/16/32-token tails) must match cap 8 */
+        for (uint32_t i = 0; i < 2; i++) setenv(env_names[i], "8", 1);
+        setenv("DS4_QWEN4_MOE_MID_NT", "8", 1);
+        setenv("DS4_QWEN4_MOE_TAILS", "1", 1);
+        require_ok(ds4_gpu_tensor_fill_f32(gmid, sentinel, mid_n + guard), "MoE mid nt8 sentinels");
+        require_ok(ds4_gpu_qwen4_moe_mm_mid_tensor(gmid, gx, glists, gcounts, a->base, a->size, gate_off, up_off,
+                                                12u, NE, T, slots, n_out, E, F, list_cap), "MoE mid nt8 dispatch");
+        float *got_mid = download(gmid, mid_n + guard);
+        check_exact_f32("MoE mid nt8", got_mid, ref_mid, mid_n + guard);
+        free(got_mid);
+        unsetenv("DS4_QWEN4_MOE_MID_NT");
+        unsetenv("DS4_QWEN4_MOE_TAILS");
+    }
+    printf("  MoE tile caps T=%u Q4_K/%s: caps 1,16,32 and 64-token gate/up tiles byte-exact mid/down vs cap8\n",
            T, down_type == 39u ? "mxfp4" : "q8_0");
     for (uint32_t i = 0; i < 2; i++) {
         if (saved_env[i]) setenv(env_names[i], saved_env[i], 1); else unsetenv(env_names[i]);
@@ -2298,6 +2403,36 @@ static int bench_p_moe_mm(void *ud) {
            ds4_gpu_qwen4_moe_mm_mid_tensor(c->t[22], c->t[18], c->t[20], c->t[21], c->a->base, c->a->size, c->off[8], c->off[9], 8u, 16, 256, 10, 10, 2560, 640, 256) &&
            ds4_gpu_qwen4_moe_mm_down_tensor(c->t[23], c->t[22], c->t[20], c->t[21], c->a->base, c->a->size, c->off[10], 8u, 16, 256, 10, 10, 640, 2560, 256);
 }
+/* Production-shaped routed tiles: Q4_K gate/up + MXFP4 down, 10 slots per
+ * token.  One dense case (32 experts, ~640 pairs each) and one at the
+ * density of an 8192-token chunk (256 experts, ~80 pairs each). */
+static int bench_p_moe_mm_q4k_case(bench_ctx *c, uint32_t NE, uint32_t seed0, ds4_gpu_tensor **st, uint64_t *offs) {
+    const uint32_t T = 2048, slots = 10, E = 2560, F = 640, cap = NE >= 256 ? 512 : T;
+    if (!st[0]) {
+        double *sh;
+        offs[0] = arena_q4_K(c->a, (uint64_t)NE * F, E, &sh, 0.05f); free(sh);
+        offs[1] = arena_q4_K(c->a, (uint64_t)NE * F, E, &sh, 0.05f); free(sh);
+        offs[2] = arena_tier(c->a, 39u, (uint64_t)NE * E, F, &sh); free(sh);
+        int32_t *s = malloc((uint64_t)T * slots * sizeof(int32_t));
+        uint32_t seed = seed0;
+        for (uint64_t i = 0; i < (uint64_t)T * slots; i++) { seed = seed * 1664525u + 1013904223u; s[i] = (int32_t)((seed >> 8) % NE); }
+        st[0] = ds4_gpu_tensor_alloc((uint64_t)T * slots * sizeof(int32_t));
+        require_ok(st[0] && ds4_gpu_tensor_write(st[0], 0, s, (uint64_t)T * slots * sizeof(int32_t)), "moe q4k bench selection");
+        free(s);
+        st[1] = ds4_gpu_tensor_alloc((uint64_t)NE * cap * sizeof(int32_t));
+        st[2] = ds4_gpu_tensor_alloc(NE * sizeof(int32_t));
+        float *xv = rand_vec((uint64_t)T * E, 1.0f);
+        st[3] = upload(xv, (uint64_t)T * E); free(xv);
+        st[4] = upload(NULL, (uint64_t)T * slots * F);
+        st[5] = upload(NULL, (uint64_t)T * slots * E);
+        require_ok(st[1] && st[2] && st[3] && st[4] && st[5], "moe q4k bench buffers");
+    }
+    return ds4_gpu_qwen4_moe_build_lists_tensor(st[1], st[2], st[0], T, slots, NE, cap) &&
+           ds4_gpu_qwen4_moe_mm_mid_tensor(st[4], st[3], st[1], st[2], c->a->base, c->a->size, offs[0], offs[1], 12u, NE, T, slots, slots, E, F, cap) &&
+           ds4_gpu_qwen4_moe_mm_down_tensor(st[5], st[4], st[1], st[2], c->a->base, c->a->size, offs[2], 39u, NE, T, slots, slots, F, E, cap);
+}
+static int bench_p_moe_mm_q4k(void *ud) { static ds4_gpu_tensor *st[6]; static uint64_t offs[3]; return bench_p_moe_mm_q4k_case(ud, 32, 12345u, st, offs); }
+static int bench_p_moe_mm_q4k_lo(void *ud) { static ds4_gpu_tensor *st[6]; static uint64_t offs[3]; return bench_p_moe_mm_q4k_case(ud, 256, 777u, st, offs); }
 static int bench_gdn_scan(void *ud) { bench_ctx *c = ud; return ds4_gpu_qwen4_gdn_scan_tensor(c->t[15], c->t[1], c->t[11], c->t[13], c->t[14], 1, 16, 48, 128, NULL, 0u); }
 static int bench_gdn_scan2(void *ud) { bench_ctx *c = ud; return ds4_gpu_qwen4_gdn_scan_tensor(c->t[15], c->t[1], c->t[11], c->t[13], c->t[14], 2, 16, 48, 128, NULL, 0u); }
 
@@ -2451,6 +2586,8 @@ static void bench_dispatch(arena_t *a) {
     bench_run("q8 gemm 6144x2560 T=256 (DS4)", bench_p_q8_gemm, &c, 20);
     bench_run("q8 gemm 6144x2560 T=256 (dense mm)", bench_p_q8_mm, &c, 20);
     bench_run("moe mm lists+mid+down 16 experts T=256 (all 2560 pairs)", bench_p_moe_mm, &c, 10);
+    bench_run("moe mm q4k/mxfp4 32 experts T=2048 x10 slots", bench_p_moe_mm_q4k, &c, 10);
+    bench_run("moe mm q4k/mxfp4 lo 256 experts T=2048 x10 slots", bench_p_moe_mm_q4k_lo, &c, 10);
     {   /* decays in (0,1], betas in (0,1) for the scan benches */
         float *g = malloc(1024 * 48 * 4), *b = malloc(1024 * 48 * 4);
         for (int i = 0; i < 1024 * 48; i++) { g[i] = 0.9f + 0.1f * frand(); b[i] = 0.5f * frand() + 0.25f; }
@@ -2590,6 +2727,8 @@ int main(void) {
     test_decode_fusions(&arena);
     test_qwen4_argmax();
     test_hc_pair_groups(&arena);
+    test_mv_ext_groups(&arena);
+    test_hc_mix_prefetch(&arena);
     test_hc(&arena, 2560, 320, 3, 1u);
     test_hc(&arena, 2560, 320, 2, 1u);
     test_hc(&arena, 2560, 320, 2, 0u);

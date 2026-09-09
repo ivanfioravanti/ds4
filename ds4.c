@@ -54907,6 +54907,12 @@ typedef struct {
     /* MTP: staged predictor input, its residual, and the recurrent-state
      * snapshot that verify rollback restores */
     ds4_gpu_tensor *mtp_e, *mtp_cat, *mtp_proj, *mtp_R, *mtp_argmax, *mtp_argmax_tmp;
+    /* MTP draft head over a ranked vocabulary subset: gathered Q8 rows, their
+     * token ids, and whether the lazy load was attempted */
+    ds4_gpu_tensor *draft_head;
+    int32_t *draft_ids;
+    uint32_t draft_rows;
+    bool draft_head_tried;
     ds4_gpu_tensor *snap_lin_state[DS4_MAX_LAYER];
     ds4_gpu_tensor *snap_lin_hist[DS4_MAX_LAYER];
     ds4_gpu_tensor *snap_ple_hist;
@@ -55035,8 +55041,11 @@ static void qwen4_graph_free(ds4_qwen4_gpu_graph *g) {
         &g->router, &g->selected, &g->weights, &g->mid, &g->part, &g->sh_gate_logit, &g->logits,
         &g->moe_lists, &g->moe_counts, &g->sh_gate, &g->sh_up, &g->sh_mid, &g->sh_out, &g->hc_u, &g->hc_lo_act,
         &g->inj_alt, &g->mtp_e, &g->mtp_cat, &g->mtp_proj, &g->mtp_R, &g->mtp_argmax, &g->mtp_argmax_tmp, &g->snap_ple_hist, &g->pos3,
+        &g->draft_head,
     };
     free(g->host_pos3);
+    free(g->draft_ids);
+    g->draft_ids = NULL;
     g->host_pos3 = NULL;
     for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
         ds4_gpu_tensor_free(*all[i]);
@@ -55193,9 +55202,12 @@ static void qwen4_graph_reset(ds4_qwen4_gpu_graph *g) {
     g->mrope_delta = 0;
 }
 
-static bool qwen4_gemv(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w,
-                       const ds4_gpu_tensor *x, uint32_t n_tok) {
-    const uint64_t in_dim = w->dim[0], out_dim = w->ndim >= 2 ? w->dim[1] : 1u;
+/* rows > 0 limits the product to the leading rows of w (a contiguous prefix
+ * of the weight buffer); the per-row arithmetic is unchanged. */
+static bool qwen4_gemv_rows(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w,
+                            const ds4_gpu_tensor *x, uint32_t n_tok, uint64_t rows) {
+    const uint64_t in_dim = w->dim[0], full_dim = w->ndim >= 2 ? w->dim[1] : 1u;
+    const uint64_t out_dim = rows && rows < full_dim ? rows : full_dim;
     int rc = 0;
     /* prefill batches of f32 weights: DS4's dense path for that type runs per
      * token, the tiled GEMM reads each weight once per 32 tokens */
@@ -55224,6 +55236,77 @@ static bool qwen4_gemv(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor
                 (int)w->name.len, w->name.ptr, w->type, in_dim, out_dim, n_tok);
     }
     return rc != 0;
+}
+
+static bool qwen4_gemv(ds4_gpu_tensor *out, const ds4_model *m, const ds4_tensor *w,
+                       const ds4_gpu_tensor *x, uint32_t n_tok) {
+    return qwen4_gemv_rows(out, m, w, x, n_tok, 0u);
+}
+
+/* The MTP draft only needs its argmax, and the tokenizer assigns ids in
+ * merge order, so the frequent tokens sit at low ids: DS4_QWEN4_MTP_DRAFT_ROWS
+ * scores the draft over that leading prefix of the output head only.  The
+ * verify rows always use the full head, so committed tokens and every
+ * teacher-forced logit are unchanged; only which draft is proposed can differ
+ * when the true argmax lies beyond the prefix.  Default: the full vocabulary. */
+/* DS4_QWEN4_MTP_DRAFT_VOCAB=<file>: token ids, one per line, most frequent
+ * first (the MTPLX FR-Spec idea).  The draft head becomes a gathered copy of
+ * those output rows, so the draft is scored over that subset and the argmax
+ * maps back through the list; the verify rows still use the full head.
+ * Loaded once per graph; a missing or invalid file leaves the full head. */
+static bool qwen4_mtp_draft_head_load(ds4_qwen4_gpu_graph *g, const ds4_model *m, const ds4_tensor *w) {
+    if (g->draft_head_tried) return g->draft_head != NULL;
+    g->draft_head_tried = true;
+    const char *path = getenv("DS4_QWEN4_MTP_DRAFT_VOCAB");
+    if (!path || !path[0] || w->type != DS4_TENSOR_Q8_0 || w->ndim < 2 || (w->dim[0] % 32u) != 0) return false;
+    FILE *fp = fopen(path, "r");
+    if (!fp) { fprintf(stderr, "ds4: Qwen3.8 MTP draft vocabulary %s: %s\n", path, strerror(errno)); return false; }
+    const uint64_t V = w->dim[1];
+    int32_t *ids = malloc(V * sizeof(int32_t));
+    uint8_t *seen = calloc(V, 1);
+    uint32_t n = 0;
+    long long v;
+    while (ids && seen && n < V && fscanf(fp, "%lld", &v) == 1) {
+        if (v < 0 || v >= (long long)V || seen[v]) continue;
+        seen[v] = 1;
+        ids[n++] = (int32_t)v;
+    }
+    fclose(fp);
+    free(seen);
+    if (!ids || n == 0 || n >= V) {
+        fprintf(stderr, "ds4: Qwen3.8 MTP draft vocabulary %s: need 1..%" PRIu64 " distinct ids (got %u)\n", path, V - 1u, n);
+        free(ids);
+        return false;
+    }
+    const uint64_t row_bytes = (w->dim[0] / 32u) * 34u;
+    const uint64_t bytes = (uint64_t)n * row_bytes;
+    uint8_t *rows = malloc(bytes);
+    ds4_gpu_tensor *head = rows ? ds4_gpu_tensor_alloc(bytes) : NULL;
+    if (rows && head) {
+        const uint8_t *src = (const uint8_t *)m->map + w->abs_offset;
+        for (uint32_t i = 0; i < n; i++) memcpy(rows + (uint64_t)i * row_bytes, src + (uint64_t)ids[i] * row_bytes, row_bytes);
+    }
+    const bool ok = rows && head && ds4_gpu_tensor_write(head, 0, rows, bytes);
+    free(rows);
+    if (!ok) {
+        fprintf(stderr, "ds4: Qwen3.8 MTP draft head upload failed\n");
+        ds4_gpu_tensor_free(head);
+        free(ids);
+        return false;
+    }
+    g->draft_head = head;
+    g->draft_ids = ids;
+    g->draft_rows = n;
+    fprintf(stderr, "ds4: Qwen3.8 MTP draft head: %u of %" PRIu64 " vocabulary rows from %s (%.0f MiB)\n",
+            n, V, path, (double)bytes / (1024.0 * 1024.0));
+    return true;
+}
+
+static uint32_t qwen4_mtp_draft_rows(void) {
+    /* read per cycle so the A/B harnesses can switch it per step */
+    const char *env = getenv("DS4_QWEN4_MTP_DRAFT_ROWS");
+    const long long v = env && env[0] ? strtoll(env, NULL, 10) : 0;
+    return v > 0 && v < (long long)DS4_N_VOCAB ? (uint32_t)v : DS4_N_VOCAB;
 }
 
 /* Decode-sized batches (a token, or the 2-token MTP verify) take the fused
@@ -55783,23 +55866,32 @@ static bool qwen4_graph_mtp_steps(ds4_qwen4_gpu_graph *g, const ds4_model *m, co
     if (ok) ok = qwen4_graph_hc_mix(g, m, l->hc_ffn_norm, l->hc_ffn_down, l->hc_ffn_up, l->hc_ffn_inject, T);
     if (ok) ok = qwen4_graph_moe(g, m, l, T);
     ds4_gpu_tensor *last = NULL;
+    const char *argmax_env = getenv("DS4_QWEN4_MTP_GPU_ARGMAX");
+    const bool gpu_argmax = want_logits && draft_out && !logits_out &&
+        (!argmax_env || strcmp(argmax_env, "0") != 0);
+    /* draft-only rows: host logits consumers always see the full head */
+    const bool gathered = gpu_argmax && qwen4_mtp_draft_head_load(g, m, w->output);
+    const uint32_t head_rows = gathered ? g->draft_rows : gpu_argmax ? qwen4_mtp_draft_rows() : DS4_N_VOCAB;
     if (ok && want_logits) {
         last = ds4_gpu_tensor_view(g->mtp_R, (T - 1u) * hc * emb_bytes, hc * emb_bytes);
         g->R = last;
         ok = last && qwen4_graph_hc_mix(g, m, l->nextn_hc_head_norm, l->nextn_hc_head_down, l->nextn_hc_head_up, NULL, 1) &&
-             qwen4_gemv(g->logits, m, w->output, g->mixed, 1);
+             (gathered ? ds4_gpu_qwen4_matmul_q8_0_weights_tensor(g->logits, g->draft_head, (uint32_t)w->output->dim[0],
+                                                                  head_rows, g->mixed) != 0
+                       : qwen4_gemv_rows(g->logits, m, w->output, g->mixed, 1, head_rows));
     }
     g->R = R_save;
-    const char *argmax_env = getenv("DS4_QWEN4_MTP_GPU_ARGMAX");
-    const bool gpu_argmax = want_logits && draft_out && !logits_out &&
-        (!argmax_env || strcmp(argmax_env, "0") != 0);
     if (ok && gpu_argmax) ok = ds4_gpu_qwen4_argmax_tensor(g->mtp_argmax, g->mtp_argmax_tmp,
-                                                          g->logits, DS4_N_VOCAB) != 0;
+                                                          g->logits, head_rows) != 0;
     if (!ds4_gpu_end_commands()) ok = false;
     ds4_gpu_tensor_free(last);
     if (ok && gpu_argmax) {
         int32_t token = -1;
         ok = ds4_gpu_tensor_read(g->mtp_argmax, 0, &token, sizeof(token)) != 0;
+        if (ok && gathered) {
+            if (token < 0 || (uint32_t)token >= g->draft_rows) ok = false;
+            else token = g->draft_ids[token];
+        }
         if (ok && (token < 0 || token >= (int32_t)DS4_N_VOCAB)) ok = false;
         if (ok) *draft_out = token;
     } else if (ok && want_logits) {

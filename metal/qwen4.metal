@@ -259,6 +259,66 @@ QWEN4_HC_MIX_INSTANCE(f16, qwen4_w_f16)
 QWEN4_HC_MIX_INSTANCE(f32, qwen4_w_f32)
 QWEN4_HC_MIX_INSTANCE(q8, qwen4_w_q8)
 
+/* F16 gate/mix with eight terms loaded ahead per lane round.  Under the
+ * library's fast math the shipped loop compiles to x = l*(1/hc);
+ * sig = sigmoid(x); acc += (x*w)*sig (the compiler reassociates
+ * w*silu(x)) with no fused multiply-add; this kernel spells that op order
+ * out with reassociation and contraction pinned off, so its rows are
+ * byte-identical to kernel_qwen4_hc_gate_mix_f16 (tests/test_qwen4_kernels.c
+ * pins it) while the loads overlap the sigmoid chain. */
+kernel void kernel_qwen4_hc_gate_mix_f16_pf(
+        constant ds4_metal_args_qwen4_hc_gate_mix & args,
+        device const float *xn,
+        device const float *lo,
+        device const char  *w_up,
+        device float       *mixed,
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort3 ntg [[threads_per_threadgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]]) {
+    const uint hc = args.n_hc;
+    const uint E = args.n_embd;
+    const uint nsg = ntg.x / 32;
+    const uint d = tgpig.x * nsg + sgitg;
+    const uint tok = tgpig.y;
+    if (d >= E || tok >= args.n_tokens) return;
+    const uint s = tiisg / 8, lane = tiisg % 8;
+    device const float *l = lo + (uint64_t)tok * args.n_rank;
+    device const half *wr = (device const half *)w_up + (uint64_t)(s * E + d) * args.n_rank;
+    const float inv_hc = 1.0f / (float)hc;
+    float acc = 0.0f;
+    uint r = lane;
+    for (; r + 56u < args.n_rank; r += 64u) {
+        float wv[8], lv[8];
+        for (uint i = 0; i < 8; i++) { wv[i] = (float)wr[r + 8u * i]; lv[i] = l[r + 8u * i]; }
+        for (uint i = 0; i < 8; i++) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+            const float x = lv[i] * inv_hc;
+            const float sig = qwen4_sigmoid(x);
+            const float t = x * wv[i];
+            const float u = t * sig;
+            acc = acc + u;
+        }
+    }
+    for (; r < args.n_rank; r += 8u) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+        const float x = l[r] * inv_hc;
+        const float sig = qwen4_sigmoid(x);
+        const float t = x * (float)wr[r];
+        const float u = t * sig;
+        acc = acc + u;
+    }
+    acc += simd_shuffle_xor(acc, 1);
+    acc += simd_shuffle_xor(acc, 2);
+    acc += simd_shuffle_xor(acc, 4);
+    float g = qwen4_sigmoid(acc) * xn[(uint64_t)tok * E * hc + s * E + d];
+    g += simd_shuffle_xor(g, 8);
+    g += simd_shuffle_xor(g, 16);
+    if (tiisg == 0) mixed[(uint64_t)tok * E + d] = g / (float)hc;
+}
+
 /* Two-token MTP verification: reuse each up-projection weight for both
  * rows, and activate the low-rank inputs once per threadgroup. */
 template <typename W>
@@ -287,6 +347,64 @@ kernel void kernel_qwen4_hc_gate_mix_pair(
     const uint64_t row = (uint64_t)(s * E + d) * rank;
     float2 acc = 0.0f;
     for (uint r = lane; r < rank; r += 8) acc += w.at(row + r) * activated[r];
+    acc += simd_shuffle_xor(acc, 1);
+    acc += simd_shuffle_xor(acc, 2);
+    acc += simd_shuffle_xor(acc, 4);
+    float2 v = float2(qwen4_sigmoid(acc.x) * xn[s * E + d],
+                      qwen4_sigmoid(acc.y) * xn[E * hc + s * E + d]);
+    v += simd_shuffle_xor(v, 8);
+    v += simd_shuffle_xor(v, 16);
+    if (tiisg == 0) {
+        mixed[d] = v.x / (float)hc;
+        mixed[E + d] = v.y / (float)hc;
+    }
+}
+
+/* Paired F16 gate/mix with eight weights and eight activated pairs loaded
+ * ahead per lane round.  The shipped pair loop runs as a fused multiply-add
+ * chain acc = fma(w, act, acc) per element (unlike the single-row mixer,
+ * which the backend leaves unfused); that chain is spelled out here with
+ * reassociation pinned off, so both rows are byte-identical to
+ * kernel_qwen4_hc_gate_mix_pair_f16 (tests/test_qwen4_kernels.c pins them). */
+kernel void kernel_qwen4_hc_gate_mix_pair_f16_pf(
+        constant ds4_metal_args_qwen4_hc_gate_mix & args,
+        device const float *xn,
+        device const float *lo,
+        device const char *w_up,
+        device float *mixed,
+        threadgroup float2 *activated [[threadgroup(0)]],
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tid [[thread_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]]) {
+    const uint E = args.n_embd, hc = args.n_hc, rank = args.n_rank;
+    const uint d = tgpig.x * (ntg.x / 32) + sgitg;
+    for (uint r = tid; r < rank; r += ntg.x) {
+        activated[r] = float2(qwen4_silu(lo[r] / (float)hc),
+                              qwen4_silu(lo[rank + r] / (float)hc));
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (d >= E) return;
+    const uint s = tiisg / 8, lane = tiisg % 8;
+    device const half *wr = (device const half *)w_up + (uint64_t)(s * E + d) * rank;
+    float2 acc = 0.0f;
+    uint r = lane;
+    for (; r + 56u < rank; r += 64u) {
+        float wv[8];
+        float2 av[8];
+        for (uint i = 0; i < 8; i++) { wv[i] = (float)wr[r + 8u * i]; av[i] = activated[r + 8u * i]; }
+        for (uint i = 0; i < 8; i++) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+            acc = fma(float2(wv[i]), av[i], acc);
+        }
+    }
+    for (; r < rank; r += 8u) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+        acc = fma(float2((float)wr[r]), activated[r], acc);
+    }
     acc += simd_shuffle_xor(acc, 1);
     acc += simd_shuffle_xor(acc, 2);
     acc += simd_shuffle_xor(acc, 4);
@@ -2310,6 +2428,92 @@ kernel void kernel_qwen4_moe_down(
     }
 }
 
+/* MXFP4 routed down rows with four blocks per lane requested before the
+ * accumulation chain.  The shipped qwen4_row_dot loop for type 39 compiles
+ * to s = t0*y0 + t1*y1 + t2*y16 + t3*y17 (left to right), acc += s*d; that
+ * order is spelled out with reassociation pinned off (tests/test_qwen4_kernels.c
+ * pins the rows against kernel_qwen4_moe_down).  The shared Q8 slot keeps the
+ * generic row dot. */
+#define QWEN4_MXFP4_PF_ACC(E_, Q0_, Q1_, Y0_, Y1_, Y16_, Y17_) do { \
+    const float d_ = ds4_metal_e8m0_to_f32(E_); \
+    const float t0_ = ds4_metal_mxfp4_values[(Q0_) & 0xfu], t1_ = ds4_metal_mxfp4_values[(Q1_) & 0xfu]; \
+    const float t2_ = ds4_metal_mxfp4_values[(Q0_) >> 4], t3_ = ds4_metal_mxfp4_values[(Q1_) >> 4]; \
+    float s_ = t0_ * (Y0_); \
+    /*ACC1*/ s_ = fma(t1_, (Y1_), s_);\
+    /*ACC2*/ s_ = fma(t2_, (Y16_), s_);\
+    /*ACC3*/ s_ = fma(t3_, (Y17_), s_);\
+    /*ACC4*/ acc = acc + s_ * d_;\
+} while (0)
+
+kernel void kernel_qwen4_moe_down_mxfp4_pf(
+        constant ds4_metal_args_qwen4_moe & args,
+        device const char    *down_base,
+        device const int32_t *selected,
+        device const float   *mid,
+        device float         *part,
+        device const char    *sh_down,
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort3 ntg [[threads_per_threadgroup]]) {
+    const uint slot = tgpig.y;
+    const uint tok = tgpig.z;
+    const uint n_out = args.n_slots + args.has_shared;
+    const uint nr = is_function_constant_defined(qwen4_mv_rows) ? qwen4_mv_rows : 2u;
+    const uint dim = is_function_constant_defined(qwen4_mv_dim) ? qwen4_mv_dim : args.in_dim;
+    const uint st = is_function_constant_defined(qwen4_mv_shared_type) ? qwen4_mv_shared_type : args.shared_type;
+    const uint row0 = (tgpig.x * (ntg.x / 32u) + (uint)sgitg) * nr;
+    if (row0 >= args.out_rows || slot >= n_out || tok >= args.n_tokens) return;
+    const uint64_t pair = (uint64_t)tok * n_out + slot;
+    device const float *m = mid + pair * args.in_dim;
+    if (slot == args.n_slots) {
+        for (uint r = row0; r < row0 + nr && r < args.out_rows; r++) {
+            const float v = qwen4_row_dot(sh_down + (uint64_t)r * args.shared_row_bytes, m, st, dim, tiisg);
+            if (tiisg == 0) part[pair * args.out_rows + r] = v;
+        }
+        return;
+    }
+    const uint64_t ebase = (uint64_t)(uint)selected[(uint64_t)tok * args.n_slots + slot] * args.expert_bytes;
+    const uint ix = tiisg / 8, it = tiisg % 8;
+    const uint nb = dim / 32;
+    for (uint r = row0; r < row0 + nr && r < args.out_rows; r++) {
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
+        device const uchar *row = (device const uchar *)(down_base + ebase + (uint64_t)r * args.row_bytes);
+        float acc = 0.0f;
+        uint ib = ix;
+        for (; ib + 12u < nb; ib += 16u) {
+            device const uchar *b0 = row + (uint64_t)ib * 17u;
+            device const uchar *b1 = b0 + 4u * 17u, *b2 = b0 + 8u * 17u, *b3 = b0 + 12u * 17u;
+            device const float *y0 = m + ib * 32u + it * 2u;
+            device const float *y1 = y0 + 128u, *y2 = y0 + 256u, *y3 = y0 + 384u;
+            const uchar e0 = b0[0], e1 = b1[0], e2 = b2[0], e3 = b3[0];
+            const uint p0 = b0[1 + it * 2u], q0 = b0[2 + it * 2u];
+            const uint p1 = b1[1 + it * 2u], q1 = b1[2 + it * 2u];
+            const uint p2 = b2[1 + it * 2u], q2 = b2[2 + it * 2u];
+            const uint p3 = b3[1 + it * 2u], q3 = b3[2 + it * 2u];
+            const float y0a = y0[0], y0b = y0[1], y0c = y0[16], y0d = y0[17];
+            const float y1a = y1[0], y1b = y1[1], y1c = y1[16], y1d = y1[17];
+            const float y2a = y2[0], y2b = y2[1], y2c = y2[16], y2d = y2[17];
+            const float y3a = y3[0], y3b = y3[1], y3c = y3[16], y3d = y3[17];
+            QWEN4_MXFP4_PF_ACC(e0, p0, q0, y0a, y0b, y0c, y0d);
+            QWEN4_MXFP4_PF_ACC(e1, p1, q1, y1a, y1b, y1c, y1d);
+            QWEN4_MXFP4_PF_ACC(e2, p2, q2, y2a, y2b, y2c, y2d);
+            QWEN4_MXFP4_PF_ACC(e3, p3, q3, y3a, y3b, y3c, y3d);
+        }
+        for (; ib < nb; ib += 4u) {
+            device const uchar *b0 = row + (uint64_t)ib * 17u;
+            device const float *y0 = m + ib * 32u + it * 2u;
+            const uchar e0 = b0[0];
+            const uint p0 = b0[1 + it * 2u], q0 = b0[2 + it * 2u];
+            const float y0a = y0[0], y0b = y0[1], y0c = y0[16], y0d = y0[17];
+            QWEN4_MXFP4_PF_ACC(e0, p0, q0, y0a, y0b, y0c, y0d);
+        }
+        const float v = simd_sum(acc);
+        if (tiisg == 0) part[pair * args.out_rows + r] = v;
+    }
+}
+
 struct ds4_metal_args_qwen4_moe_reduce {
     uint32_t n_tokens;
     uint32_t n_slots;
@@ -2560,7 +2764,7 @@ kernel void kernel_qwen4_moe_mm_mid(
     uint work_count = count, work_start = 0;
     if (qwen4_moe_tail_base) {
         const uint remainder = count % qwen4_moe_tail_base;
-        const uint tail_tt = remainder <= 8u ? 8u : remainder <= 16u ? 16u : 32u;
+        const uint tail_tt = remainder <= 8u ? 8u : remainder <= 16u ? 16u : remainder <= 32u ? 32u : 64u;
         if (TT < qwen4_moe_tail_base) {
             if (!remainder || tail_tt != TT) return;
             work_start = count - remainder;
@@ -2658,6 +2862,11 @@ kernel void kernel_qwen4_moe_mm_mid<2>(constant ds4_metal_args_qwen4_moe_mm &, d
 
 template [[host_name("kernel_qwen4_moe_mm_mid")]]
 kernel void kernel_qwen4_moe_mm_mid<4>(constant ds4_metal_args_qwen4_moe_mm &, device const char *, device const char *, device const int32_t *, device const int32_t *, device const float *, device float *, uint3, ushort, ushort);
+
+/* 64-token tiles: each decoded weight tile serves twice the tokens (8 KB of
+ * activations staged per K step); remainders take the 8/16/32-token kernels. */
+template [[host_name("kernel_qwen4_moe_mm_mid_nt8")]]
+kernel void kernel_qwen4_moe_mm_mid<8>(constant ds4_metal_args_qwen4_moe_mm &, device const char *, device const char *, device const int32_t *, device const int32_t *, device const float *, device float *, uint3, ushort, ushort);
 
 /* part[t][slot][r] = down . mid[t][slot], same tiling with mid as B */
 template <uint NT>
