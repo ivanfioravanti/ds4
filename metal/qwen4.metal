@@ -2737,6 +2737,48 @@ static inline void qwen4_mm_stage16(device const char *row, uint b, uint q0, uin
     qwen4_mm_stage8(row, b, q0 + 1, type, dst + 8);
 }
 
+/* Raw words of one 32-block (K step) of an expert row, for the tensor tiles'
+ * register prefetch: Q4_K keeps the 16-byte header (d, dmin, scales) and the
+ * 16 nibble bytes of the quarter pair; MXFP4 keeps the 17 block bytes. */
+struct qwen4_raw16 { uint4 h; uint4 q; uchar m[17]; };
+static inline qwen4_raw16 qwen4_load_raw16(device const char *row, uint b, uint q0, uint type) {
+    qwen4_raw16 r;
+    if (type == 12) {
+        const uint sb = b / 8, group = b % 8;
+        device const uchar *blk = (device const uchar *)(row + (uint64_t)sb * 144);
+        r.h = *(device const uint4 *)blk;
+        r.q = *(device const uint4 *)(blk + 16 + (group >> 1) * 32 + q0 * 8);
+    } else {
+        device const uchar *blk = (device const uchar *)(row + (uint64_t)b * 17);
+#pragma unroll
+        for (uint i = 0; i < 17; i++) r.m[i] = blk[i];
+    }
+    return r;
+}
+static inline void qwen4_dequant_raw16(qwen4_raw16 r, uint b, uint q0, uint type, threadgroup half *dst) {
+    if (type == 12) {
+        const uint group = b % 8;
+        const float d = (float)as_type<half>((ushort)(r.h.x & 0xFFFFu));
+        const float dmin = (float)as_type<half>((ushort)(r.h.x >> 16));
+        const uint scw[3] = { r.h.y, r.h.z, r.h.w };
+#define QWEN4_SCB(i) ((scw[(i) >> 2] >> (8u * ((i) & 3u))) & 0xFFu)
+        uint sN, mn;
+        if (group < 4) { sN = QWEN4_SCB(group) & 63u; mn = QWEN4_SCB(group + 4) & 63u; }
+        else { sN = (QWEN4_SCB(group + 4) & 0xFu) | ((QWEN4_SCB(group - 4) & 0xC0u) >> 2); mn = (QWEN4_SCB(group + 4) >> 4) | ((QWEN4_SCB(group) & 0xC0u) >> 2); }
+#undef QWEN4_SCB
+        const float ds = d * (float)sN, dm = dmin * (float)mn;
+        const uint shift = (group & 1u) * 4u;
+        for (uint i = 0; i < 16; i++) dst[i] = (half)(ds * (float)((r.q[i >> 2] >> (8u * (i & 3u) + shift)) & 0xFu) - dm);
+        return;
+    }
+    const float d = ds4_metal_e8m0_to_f32(r.m[0]);
+    const bool hi = q0 >= 2;
+    for (uint i = 0; i < 16; i++) {
+        const uint byte = r.m[1 + i];
+        dst[i] = (half)(d * ds4_metal_mxfp4_values[hi ? (byte >> 4) : (byte & 0xfu)]);
+    }
+}
+
 #define QWEN4_MM_KS 64   /* K per staging step (two 32-blocks) */
 
 /* mid[t][slot][r] = silu(gate . x) * (up . x) for every (token, slot) routed
@@ -3059,16 +3101,21 @@ kernel void kernel_qwen4_moe_mm_mid_nax_t(
             bdst[b] = Bs + tok * NK + kq * 8u;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);   /* previous tile's C tile consumed */
+        const bool a_row = row0 + ar < args.out_rows;
+        device const char *grow = gbase + (uint64_t)(row0 + min(ar, args.out_rows - 1u)) * args.row_bytes;
+        device const char *urow = ubase + (uint64_t)(row0 + min(ar, args.out_rows - 1u)) * args.row_bytes;
+        qwen4_raw16 rg = qwen4_load_raw16(grow, 0, aq * 2, type), ru = qwen4_load_raw16(urow, 0, aq * 2, type);
         for (uint kb = 0; kb < nk; kb++) {
             {
                 threadgroup half *dg = Ag + ar * NK + aq * 16;
                 threadgroup half *du = Au + ar * NK + aq * 16;
-                if (row0 + ar < args.out_rows) {
-                    qwen4_mm_stage16(gbase + (uint64_t)(row0 + ar) * args.row_bytes, kb, aq * 2, type, dg);
-                    qwen4_mm_stage16(ubase + (uint64_t)(row0 + ar) * args.row_bytes, kb, aq * 2, type, du);
+                if (a_row) {
+                    qwen4_dequant_raw16(rg, kb, aq * 2, type, dg);
+                    qwen4_dequant_raw16(ru, kb, aq * 2, type, du);
                 } else {
                     for (uint i = 0; i < 16; i++) { dg[i] = 0.0h; du[i] = 0.0h; }
                 }
+                if (kb + 1 < nk) { rg = qwen4_load_raw16(grow, kb + 1, aq * 2, type); ru = qwen4_load_raw16(urow, kb + 1, aq * 2, type); }
             }
 #pragma unroll
             for (int b = 0; b < NB; b++) {   /* the same half rounding as the simdgroup tiles */
@@ -3153,11 +3200,15 @@ kernel void kernel_qwen4_moe_mm_down_nax_t(
             bdst[b] = Bs + tok * NK + kq * 8u;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+        const bool a_row = row0 + ar < args.out_rows;
+        device const char *drow = dbase + (uint64_t)(row0 + min(ar, args.out_rows - 1u)) * args.row_bytes;
+        qwen4_raw16 rd = qwen4_load_raw16(drow, 0, aq * 2, type);
         for (uint kb = 0; kb < nk; kb++) {
             {
                 threadgroup half *dd = As + ar * NK + aq * 16;
-                if (row0 + ar < args.out_rows) qwen4_mm_stage16(dbase + (uint64_t)(row0 + ar) * args.row_bytes, kb, aq * 2, type, dd);
+                if (a_row) qwen4_dequant_raw16(rd, kb, aq * 2, type, dd);
                 else for (uint i = 0; i < 16; i++) dd[i] = 0.0h;
+                if (kb + 1 < nk) rd = qwen4_load_raw16(drow, kb + 1, aq * 2, type);
             }
 #pragma unroll
             for (int b = 0; b < NB; b++) {
