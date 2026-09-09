@@ -2077,7 +2077,12 @@ static void test_moe_mm_tiles_exact(arena_t *a, uint32_t down_type) {
             require_ok(got_mid[((uint64_t)t * n_out + slots) * F + f] == sentinel, "MoE tile caps reserved mid slot");
         char name[128];
         snprintf(name, sizeof(name), "MoE tile caps mid T=%u down=%u cap=%u", T, down_type, caps[mode]);
-        if (mode == 0) { ref_mid = got_mid; check_exact_f32(name, ref_mid, ref_mid, mid_n); }
+        if (mode == 0) {
+            ref_mid = got_mid; check_exact_f32(name, ref_mid, ref_mid, mid_n);
+            uint64_t h = 1469598103934665603ull;
+            for (uint64_t i = 0; i < mid_n; i++) { uint32_t u; memcpy(&u, &got_mid[i], 4); h = (h ^ u) * 1099511628211ull; }
+            printf("  MoE simdgroup mid (down=%u): hash=%016llx\n", down_type, (unsigned long long)h);
+        }
         else { check_exact_f32(name, got_mid, ref_mid, mid_n + guard); free(got_mid); }
         require_ok(ds4_gpu_qwen4_moe_mm_down_tensor(gpart, gmid, glists, gcounts, a->base, a->size, down_off,
                                                  down_type, NE, T, slots, n_out, F, E, list_cap), "MoE tile caps down dispatch");
@@ -2086,7 +2091,12 @@ static void test_moe_mm_tiles_exact(arena_t *a, uint32_t down_type) {
         for (uint32_t t = 0; t < T; t++) for (uint32_t e = 0; e < E; e++)
             require_ok(got_part[((uint64_t)t * n_out + slots) * E + e] == sentinel, "MoE tile caps reserved down slot");
         snprintf(name, sizeof(name), "MoE tile caps down T=%u type=%u cap=%u", T, down_type, caps[mode]);
-        if (mode == 0) { ref_part = got_part; check_exact_f32(name, ref_part, ref_part, part_n); }
+        if (mode == 0) {
+            ref_part = got_part; check_exact_f32(name, ref_part, ref_part, part_n);
+            uint64_t h = 1469598103934665603ull;
+            for (uint64_t i = 0; i < part_n; i++) { uint32_t u; memcpy(&u, &got_part[i], 4); h = (h ^ u) * 1099511628211ull; }
+            printf("  MoE simdgroup down (down=%u): hash=%016llx\n", down_type, (unsigned long long)h);
+        }
         else { check_exact_f32(name, got_part, ref_part, part_n + guard); free(got_part); }
     }
     {   /* 64-token gate/up tiles (with their 8/16/32-token tails) must match cap 8 */
