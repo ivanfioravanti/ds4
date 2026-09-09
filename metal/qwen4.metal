@@ -3037,7 +3037,9 @@ kernel void kernel_qwen4_rows_f32_to_f16(
  * Qwen dequantizers, activations rounded to half); only the cooperative
  * matmul's accumulation order differs, so outputs are close to, not
  * identical with, kernel_qwen4_moe_mm_mid/down (test_moe_mm_tiles_exact
- * bounds the difference).  The activation operand comes pre-rounded to half
+ * bounds the difference).  With tail_base 64 (function constant 905) the
+ * 64-token kernel keeps the full tiles and the 32-token kernel takes a
+ * remainder of at most 32 tokens.  The activation operand comes pre-rounded to half
  * (kernel_qwen4_rows_f32_to_f16, one pass per call), so each K step gathers
  * 16 bytes per item.  The mid epilogue applies SiLU(gate)*up on the
  * cooperative tensors themselves (gate and up share one element layout),
@@ -3066,6 +3068,20 @@ kernel void kernel_qwen4_moe_mm_mid_nax_t(
     const uint e = tgpig.y;
     if (e >= args.n_expert) return;
     const uint count = (uint)counts[e];
+    /* tails: with tail_base 64 the 64-token tiles keep the full tiles and the
+     * 32-token kernel takes a remainder of at most 32 tokens */
+    uint work_count = count, work_start = 0;
+    if (qwen4_moe_tail_base) {
+        const uint remainder = count % qwen4_moe_tail_base;
+        const uint tail_tt = remainder <= 32u ? 32u : 64u;
+        if ((uint)NR1 < qwen4_moe_tail_base) {
+            if (!remainder || tail_tt != (uint)NR1) return;
+            work_start = count - remainder;
+            work_count = remainder;
+        } else if (remainder && tail_tt < (uint)NR1) {
+            work_count = count - remainder;
+        }
+    }
     threadgroup half *Ag = (threadgroup half *)shmem;                 /* [64][32] */
     threadgroup half *Au = (threadgroup half *)(shmem + 4096);        /* [64][32] */
     threadgroup half *Bs = (threadgroup half *)(shmem + 8192);        /* [NR1][32] */
@@ -3082,9 +3098,9 @@ kernel void kernel_qwen4_moe_mm_mid_nax_t(
     matmul2d<matmul2d_descriptor(NR1, NR0, NK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate),
              execution_simdgroups<4>> mm;
     const uint ar = tid / 2, aq = tid % 2;       /* A staging: (row, 16-wide half of the 32-block) */
-    for (uint tile = tile0; tile * NR1 < count; tile += args.tiles_per_launch) {
-        const uint t0 = tile * NR1;
-        const uint n_tile = min((uint)NR1, count - t0);
+    for (uint tile = tile0; tile * NR1 < work_count; tile += args.tiles_per_launch) {
+        const uint t0 = work_start + tile * NR1;
+        const uint n_tile = min((uint)NR1, work_count - tile * NR1);
         auto cG = mm.template get_destination_cooperative_tensor<decltype(tB), decltype(tA_g), float>();
         auto cU = mm.template get_destination_cooperative_tensor<decltype(tB), decltype(tA_u), float>();
 #pragma unroll
@@ -3170,6 +3186,20 @@ kernel void kernel_qwen4_moe_mm_down_nax_t(
     const uint e = tgpig.y;
     if (e >= args.n_expert) return;
     const uint count = (uint)counts[e];
+    /* tails: with tail_base 64 the 64-token tiles keep the full tiles and the
+     * 32-token kernel takes a remainder of at most 32 tokens */
+    uint work_count = count, work_start = 0;
+    if (qwen4_moe_tail_base) {
+        const uint remainder = count % qwen4_moe_tail_base;
+        const uint tail_tt = remainder <= 32u ? 32u : 64u;
+        if ((uint)NR1 < qwen4_moe_tail_base) {
+            if (!remainder || tail_tt != (uint)NR1) return;
+            work_start = count - remainder;
+            work_count = remainder;
+        } else if (remainder && tail_tt < (uint)NR1) {
+            work_count = count - remainder;
+        }
+    }
     threadgroup half *As = (threadgroup half *)shmem;                 /* [64][32] */
     threadgroup half *Bs = (threadgroup half *)(shmem + 4096);        /* [NR1][32] */
     threadgroup float *Cs = (threadgroup float *)shmem;               /* [NR1 tok][64 row] after the K loop */
@@ -3183,9 +3213,9 @@ kernel void kernel_qwen4_moe_mm_down_nax_t(
     matmul2d<matmul2d_descriptor(NR1, NR0, NK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate),
              execution_simdgroups<4>> mm;
     const uint ar = tid / 2, aq = tid % 2;
-    for (uint tile = tile0; tile * NR1 < count; tile += args.tiles_per_launch) {
-        const uint t0 = tile * NR1;
-        const uint n_tile = min((uint)NR1, count - t0);
+    for (uint tile = tile0; tile * NR1 < work_count; tile += args.tiles_per_launch) {
+        const uint t0 = work_start + tile * NR1;
+        const uint n_tile = min((uint)NR1, work_count - tile * NR1);
         auto cT = mm.template get_destination_cooperative_tensor<decltype(tB), decltype(tA), float>();
 #pragma unroll
         for (uint16_t i = 0; i < cT.get_capacity(); ++i) { if (cT.is_valid_element(i)) cT[i] = 0.0f; }
