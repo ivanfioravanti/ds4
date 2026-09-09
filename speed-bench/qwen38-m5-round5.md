@@ -144,6 +144,10 @@ Rejected with numbers (all exact where applicable):
 | attention K/V gather pipelined one tile ahead (`kernel_qwen4_attn_mm`) | exact, +0.24% at 8K-40K (noise); the per-token threadgroups already hide the gather latency |
 | GDN scan next-token operand prefetch (`kernel_qwen4_gdn_scan_r4`) | exact, scan bench 1120 vs 1112-1122 us; the scan is bound by its reduction chain |
 | register prefetch of the next k step's Q8 words in the dense tensor-op GEMM (`kernel_mul_mm_q8_0_f32_nax_direct_rhs_n128`, default path) | exact, -1.6% at 8K-24K (3.3 -> 3.6 ms per dispatch) |
+| dense tensor-op GEMM with the activation rows pre-rounded to half (`kernel_mul_mm_q8_0_f16_nax_direct_rhs`) | not exact (the unit multiplies the fp32 rows at full precision; first logit 4.046 -> 4.153), kernel 3.3 -> 3.06 ms but -1% overall with the conversion pass |
+| tensor tiles with 64-wide K steps (level 3, 24 KB of threadgroup memory) | bit-identical to K=32 (max |d| 0, same hash), 6.51 -> 7.37 ms dense, 7.99 -> 8.78 ms sparse: occupancy |
+| `kernel_swiglu_flat_f32` with eight elements per thread (20k -> 2.5k threadgroups) | exact, -0.7% at 8K-24K: the kernel's timeline share was encoder wait, not work |
+| upstream's blocked conv (`kernel_qwen4_conv_halo` + `_blocked`, scoped to M3 Ultra) enabled on M5 | exact, 3.4 -> 1.2 ms per dispatch but +0.4% over three repeats (noise); the whole prefill-reuse path +0.8% |
 | register prefetch of the weight words in the simdgroup routed tiles (`kernel_qwen4_moe_mm_mid/down_nt8`, default path) | 16.0 -> 16.7 ms dense, 17.8 -> 18.4 ms sparse; the simdgroup tiles are MAC-bound, the extra registers cost more than the hidden latency |
 
 Where a chunk goes (8192 tokens at prefix 0, encoder timeline): with the first
